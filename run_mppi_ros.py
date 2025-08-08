@@ -10,7 +10,7 @@ from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
 from functions_for_controllers import find_s_of_closest_point_on_global_path, produce_track,produce_marker_array_rviz, produce_marker_rviz, steer_angle_2_command
 import numpy as np
-from dynamics import OmnidirectionalPointRobotDynamics, Kinematic_Bicycle
+from dynamics import OmnidirectionalPointRobotDynamics, Kinematic_Bicycle, Dynamic_Bicycle
 from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
 
@@ -33,11 +33,12 @@ class ROSObjective:
         self.k_vals_global_path,\
         self.k_4_local_path = generate_path_data(track_choice)
 
-        self.V_target = 1.0  # target velocity
-        self.q_lat   = 3.0
+        self.V_target = 2.5  # target velocity
+
+        self.q_lat   = 5.0
         self.q_lag   =  1.0
-        self.q_head  =  1.0
-        self.q_v     =  1.0
+        self.q_head  =  0.5
+        self.q_v     =  0.5
 
         self.q_u     = 1.0
 
@@ -48,7 +49,7 @@ class ROSObjective:
         self.n_points_kernelized = 41  # number of points in the kernelized path (41 for reference)
 
         self.nu = 2  # control dimension: [steering, throttle]
-        self.nx = 5  # state dimension: [x, y, yaw, vx, vy]
+        self.nx = 6  # state dimension: [x, y, yaw, vx, vy]
 
         self.current_state = None  # will be set by the simulator
 
@@ -81,8 +82,6 @@ class ROSObjective:
         head_err = self.wrap_angle(yaw - ref_yaw)
         speed = torch.sqrt(vx ** 2 + vy ** 2)
         speed_err = speed - V_target
-
-
 
         cost = (self.q_lat * lat_err ** 2
                 + self.q_lag * lag_err ** 2
@@ -370,7 +369,7 @@ if __name__ == "__main__":
     # 4) Planner
     planner = MPPIPlanner(
         cfg=cfg,
-        nx=5,
+        nx=6,
         dynamics=dynamics.step,
         running_cost=obj.compute_running_cost,
     )
