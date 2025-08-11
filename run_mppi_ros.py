@@ -5,6 +5,7 @@ import torch
 import math
 import os
 import sys
+import time
 
 from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
@@ -33,14 +34,17 @@ class ROSObjective:
         self.k_vals_global_path,\
         self.k_4_local_path = generate_path_data(track_choice)
 
-        self.V_target = 2.5  # target velocity
+        self.V_target = 4 # 2.5 # 2.5  # target velocity
 
-        self.q_lat   = 5.0
-        self.q_lag   =  1.0
-        self.q_head  =  0.5
-        self.q_v     =  0.5
+        self.q_lat   =  5.0
+        self.q_lag   =  2.0
+        self.q_head  =  0.1
+        self.q_v     =  0.1
+        self.q_vy    =  0.5
+        self.q_omega =  0.1 # rate of change (aggresive steering)
 
-        self.q_u     = 1.0
+        self.q_u_throttle   = 1.0
+        self.q_u_steering   = 1.0
 
         self.N = N
         self.time_horizon = N * dt
@@ -70,9 +74,11 @@ class ROSObjective:
         self.nav_goal: Tensor[4] = [ref_x, ref_y, ref_yaw, V_target]
         """
         # unpack
-        x, y, yaw, vx, vy = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4]
+        x, y, yaw, vx, vy, omega = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4], state[:, 5]
         ref_x, ref_y, ref_yaw, V_target = self.get_current_goal()  # each a scalar tensor
 
+        # print(f"Counter: {self.counter}")
+        # print(f"x: {x}, y: {y}, yaw: {yaw}, vx: {vx}, vy: {vy}, omega: {omega}")
         # errors
         dx = x - ref_x
         dy = y - ref_y
@@ -86,7 +92,9 @@ class ROSObjective:
         cost = (self.q_lat * lat_err ** 2
                 + self.q_lag * lag_err ** 2
                 + self.q_head * head_err ** 2
-                + self.q_v * speed_err ** 2)
+                + self.q_v * speed_err ** 2
+                + self.q_vy * vy ** 2
+                + self.q_omega * omega ** 2)
         return cost
 
 
@@ -260,6 +268,8 @@ class ROSObjective:
         """
         # 1) decide the look‐ahead in meters
         total_horizon = self.time_horizon  # e.g. N*dt
+
+        total_horizon = self.V_target * self.time_horizon
         # create N+1 sample points from s_start → s_start + total_horizon
         s_refs = np.linspace(s_start,
                              s_start + total_horizon,
@@ -344,9 +354,9 @@ if __name__ == "__main__":
     CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
     cfg = CONFIG["mppi"]
 
-    dynamics = Kinematic_Bicycle(
-        dt=CONFIG["dt"], device=CONFIG["device"]
-    )
+    # dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+
+    dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
     # 2) Create ROS “simulator”
     sim = SimulatorROS(car_number)
@@ -381,8 +391,8 @@ if __name__ == "__main__":
 
     while not rospy.is_shutdown():
         # making sure that while waiting the actions are zero
-        #sim.send_control(torch.tensor([0.0, 0.0]))
-        #input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
+        # sim.send_control(torch.tensor([0.0, 0.0]))
+        # input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
 
         state = sim.get_current_state()
         obj.current_state = state  # update the current state in the objective, which updates the goal
@@ -393,6 +403,9 @@ if __name__ == "__main__":
             rate.sleep()
             continue
 
+
+        start_time = time.time()
+
         # 5) Compute MPPI action
         action = planner.command(state)
         # get the candidate trajectories
@@ -400,6 +413,10 @@ if __name__ == "__main__":
         #print(f"perturbed_action: {planner.perturbed_action}")
         # publish them
         sim.publish_rollouts(rollouts)
+
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+
 
         # publish entire control input
         sim.publish_path(action.detach().cpu())
@@ -414,5 +431,10 @@ if __name__ == "__main__":
         # update counter
         counter = counter + 1
 
+        # print(f"Inputs of the rollouts: {planner.perturbed_action}")
+        # print(f"States: {planner.states}")
+        if elapsed_time > 0.05:
+
+            print(f"MPPI computation time: {elapsed_time:.4f} seconds")
         rate.sleep()
 
