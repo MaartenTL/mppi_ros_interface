@@ -14,10 +14,15 @@ import numpy as np
 from dynamics import OmnidirectionalPointRobotDynamics, Kinematic_Bicycle, Dynamic_Bicycle
 from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
+from dynamic_reconfigure.client import Client
+from std_msgs.msg import String
+import json
+
 
 abs_path = os.path.dirname(os.path.abspath(__file__))
 
 from visualization_msgs.msg import MarkerArray
+from std_msgs.msg import Float32MultiArray, Int32
 
 
 
@@ -61,8 +66,15 @@ class ROSObjective:
         self.counter = 0  # to keep track of which reference point to use
 
         self.rviz_local_path_pub = rospy.Publisher(
-            f'~rviz_local_path_{rospy.get_name()}', MarkerArray, queue_size=1
+            f'rviz_local_path', MarkerArray, queue_size=1
         )
+
+        self.path_len = len(self.s_vals_global_path)
+        self.wrap_low = int(0.20 * self.path_len)  # “low” band near 0
+        self.wrap_high = int(0.80 * self.path_len)  # “high” band near end
+        self.lap_count = 0
+        self.lap_pub = rospy.Publisher("lap_count", Int32, queue_size=1, latch=True)
+
 
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
         # wrap into [-π, π]
@@ -108,6 +120,7 @@ class ROSObjective:
         Ds_back = 0.0 # this is the length of the path that is behind the car
         estimated_ds = self.current_state[0,3] * self.dt
 
+        prev_idx = self.previous_path_index
 
         s, self.current_path_index = find_s_of_closest_point_on_global_path(
             np.array([self.current_state[0,0].item(),self.current_state[0,1].item()]),
@@ -122,13 +135,17 @@ class ROSObjective:
 
 
         if self.counter == 0:
-            # x_y_yaw_state = self.current_state[0, 0:3]  # [x, y, yaw]
-            # labels_k, local_path_length = self.produce_ylabels_4_local_kernelized_path(s, Ds_back, Ds_forward)
-            # pos_x_init_rot, pos_y_init_rot, yaw_init_rot, xyyaw_ref_path = self.relative_xyyaw_to_current_path(
-            #     x_y_yaw_state)  # current car state relative to current path index
-            #
-            # self.X0 = self.produce_X0(self.V_target, local_path_length, labels_k)
 
+            # Check which lap the DART simualator is on
+            if (self.current_path_index < prev_idx and
+                    prev_idx >= self.wrap_high and
+                    self.current_path_index <= self.wrap_low):
+                self.lap_count += 1
+                self.lap_pub.publish(Int32(self.lap_count))
+                rospy.loginfo(
+                    f"[mppi_ros] Lap {self.lap_count} detected (index {prev_idx} → {self.current_path_index}).")
+
+            # Obtain new reference track for this timestep of MPPI
             self.X0 = self.produce_X0_global(
                 V_target=self.V_target,
                 N=self.N,
@@ -157,109 +174,6 @@ class ROSObjective:
 
         self.counter = self.counter + 1
         return objective
-
-
-    def produce_ylabels_4_local_kernelized_path(self,s,Ds_back,Ds_forward):
-        #extract indexes of local path
-
-        mask = (self.s_4_local_path >= s - Ds_back) & (self.s_4_local_path <= s + Ds_forward)
-        local_path_length = Ds_back + Ds_forward
-        # Extract the indexes where the condition is true
-        indexes = np.where(mask)[0]
-        s_data_points =  self.s_4_local_path[indexes]  # This will have the local path parametrized starting from 0
-        k_data_points = self.k_4_local_path[indexes]
-
-        # resample the data points to have a fixed number of points
-        n = self.n_points_kernelized
-
-        s_data_points_fit = np.linspace(s_data_points[0], s_data_points[-1], n)
-        labels_k = np.interp(s_data_points_fit, s_data_points, k_data_points)
-        return labels_k, local_path_length
-
-    def relative_xyyaw_to_current_path(self, x_y_yaw_state):
-        # evaluate current reference path and derivatives needed for initial conditions
-        # find corresponding index for s on s_4_local path
-        current_path_index_on_4_local_path = np.argmin(np.abs(self.s_4_local_path - self.s))
-        x_ref_path = self.x_4_local_path[current_path_index_on_4_local_path]
-        y_ref_path = self.y_4_local_path[current_path_index_on_4_local_path]
-        dx_ds_ref_path = self.dx_ds[current_path_index_on_4_local_path]
-        dy_ds_ref_path = self.dy_ds[current_path_index_on_4_local_path]
-        # evaluate heading angle
-        heading_angle_path = np.arctan2(dy_ds_ref_path, dx_ds_ref_path)
-
-        # self.local_path_ref_x,self.local_path_ref_y, self.local_path_rot_angle
-        # apply shift to the x y position of the car
-        pos_x_0 = x_y_yaw_state[0].item() - x_ref_path
-        pos_y_0 = x_y_yaw_state[1].item() - y_ref_path
-        # now rotate to have the first point aligned with the x axis
-        pos_x_init_rot = pos_x_0 * np.cos(heading_angle_path) + pos_y_0 * np.sin(heading_angle_path)
-        pos_y_init_rot = -pos_x_0 * np.sin(heading_angle_path) + pos_y_0 * np.cos(heading_angle_path)
-
-        # apply rotation to yaw
-        yaw_init_rot = x_y_yaw_state[2].item() - heading_angle_path
-
-        # this is needed to keep the yaw angle from going over 2 pi
-        if yaw_init_rot > np.pi:
-            yaw_init_rot -= 2 * np.pi
-
-        elif yaw_init_rot < -np.pi:
-            yaw_init_rot += 2 * np.pi
-
-        #
-        xyyaw_ref_path = [x_ref_path, y_ref_path, heading_angle_path]
-
-        return pos_x_init_rot, pos_y_init_rot, yaw_init_rot, xyyaw_ref_path
-
-    def produce_X0(self,V_target,local_path_length,labels_k_params):
-        # Initial guess for state trajectory
-        X0_array = np.zeros((self.N,4))
-        # assign initial guess for the states by forward euler integration on th ereference path
-
-        # refinement for first guess needs to be higher because the forward euler is a bit lame
-        N_0 = 1000
-
-        s_0_vec = np.linspace(0, 0 + V_target * 1.5, N_0+1)
-
-        # interpolate to get kurvature values
-        normalized_s_4_kernel_path = np.linspace(0.0, 1.0, self.n_points_kernelized)
-
-        s_star_0 = s_0_vec / local_path_length # normalize s
-        k_0_vals = np.interp(s_star_0, normalized_s_4_kernel_path, labels_k_params)
-        x_ref_0 = np.zeros(N_0+1)
-        y_ref_0 = np.zeros(N_0+1)
-        ref_heading_0 = np.zeros(N_0+1)
-        dt = self.time_horizon / N_0
-        u_yaw_rate_0 = np.zeros(N_0+1)
-        for i in range(1,N_0+1):
-            x_ref_0[i] = x_ref_0[i-1] + V_target * dt * np.cos(ref_heading_0[i-1])
-            y_ref_0[i] = y_ref_0[i-1] + V_target * dt * np.sin(ref_heading_0[i-1])
-            ref_heading_0[i] = ref_heading_0[i-1] + k_0_vals[i-1] * V_target * dt
-
-            u_yaw_rate_0[i-1] = (ref_heading_0[i] - ref_heading_0[i-1] )/ dt
-
-        # now down sample to the N points
-        s_0_vec = np.interp(np.linspace(0,1,self.N+1), np.linspace(0,1,N_0+1), s_0_vec)
-        x_ref_0 = np.interp(np.linspace(0,1,self.N+1), np.linspace(0,1,N_0+1), x_ref_0)
-        y_ref_0 = np.interp(np.linspace(0,1,self.N+1), np.linspace(0,1,N_0+1), y_ref_0)
-        ref_heading_0 = np.interp(np.linspace(0,1,self.N+1), np.linspace(0,1,N_0+1), ref_heading_0)
-        u_yaw_rate_0 = np.interp(np.linspace(0,1,self.N+1), np.linspace(0,1,N_0+1), u_yaw_rate_0)
-
-        # assign values to the array
-        #X0_array[:,0] = u_yaw_rate_0
-        #X0_array[:,1] = np.zeros(self.N+1) # slack variable should be zero
-        #X0_array[:,2] = x_ref_0
-        #X0_array[:,3] = y_ref_0
-        #X0_array[:,4] = ref_heading_0
-        #X0_array[:,5] = s_0_vec
-        #X0_array[:,6] = x_ref_0
-        #X0_array[:,7] = y_ref_0
-        #X0_array[:,8] = ref_heading_0
-        X0_array[:, 0] = x_ref_0[1:13] #+ self.current_state[0, 0].item()  # x position
-        X0_array[:, 1] = y_ref_0[1:13] - 2.2 #+ self.current_state[0, 1].item()  # y position
-        X0_array[:, 2] = ref_heading_0[1:13]
-        X0_array[:, 3] = V_target * np.ones(self.N)
-
-        return X0_array
 
     def produce_X0_global(self, V_target, N, s_start):
         """
@@ -301,62 +215,53 @@ class ROSObjective:
         X0[:, 3] = V_target  # constant speed
 
         return X0
-        # # evaluate this for longitudinal controller coordination
-        # # adding delay compensation by projecting the position of the robot into the future
-        # # delay = 0.165  # [s]
-        # # robot_position[0] = robot_position[0] + np.cos(robot_theta) * self.v * delay
-        # # robot_position[1] = robot_position[1] + np.sin(robot_theta) * self.v * delay
-        # # robot_theta = robot_theta + self.w * delay
-        #
-        # # measure the closest point on the global path, returning the respective s parameter and its index
-        #
-        # # update index along the path to know where to search in next iteration
-        #
-        # # x_closest_point = x_vals_global_path[self.current_path_index]
-        # # y_closest_point = y_vals_global_path[self.current_path_index]
-        #
-        # # plot closest point on the reference path
-        # # rgba = [255.0, 0.0, 0.0, 0.6]
-        # # marker_type = 2
-        # # scale = 0.05
-        # # closest_point_message = produce_marker_rviz(x_closest_point, y_closest_point, rgba, marker_type, scale)
-        # # self.rviz_closest_point_on_path.publish(closest_point_message)
-        #
-        # # ----------------------------------------
-        # L = 0.175  # length of vehicle [m]
-        # # if self.v > 1.0:
-        # # 	look_ahead_dist = 1 + (self.v-1)*2
-        # # else:
-        # look_ahead_dist = 0.6  # look ahead distance on path [m]
-        #
-        # # account for path running out
-        # if s + look_ahead_dist > s_vals_global_path[-1]:  # look ahead is beyond the path length
-        #     look_ahead_s = s + look_ahead_dist - s_vals_global_path[-1]
-        # else:
-        #     look_ahead_s = s + look_ahead_dist
-        #
-        # Px = np.interp(look_ahead_s, s_vals_global_path, x_vals_global_path)
-        # Py = np.interp(look_ahead_s, s_vals_global_path, y_vals_global_path)
-        #
-        # # dx = self.x_vals_global_path[self.current_path_index + 10] - self.x_vals_global_path[self.current_path_index]
-        # # dy = self.y_vals_global_path[self.current_path_index + 10] - self.y_vals_global_path[self.current_path_index]
-        # # ref_heading = np.arctan2(dy, dx)
-        #
-        # # objective = np.array([Px, Py, ref_heading[0], self.V_target])
-        # # objective = torch.Tensor(objective) # faster when first numpy.array is made
 
+def reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=1, *,
+              actuator_dynamics=False, disturbance=False):
+    # Set pose + options and raise the reset flag
+    dr_client.update_configuration({
+        "reset_state_x": float(x),
+        "reset_state_y": float(y),
+        "reset_state_theta": float(theta),
+        "dynamic_model_choice": int(model_choice),
+        "actuator_dynamics": bool(actuator_dynamics),
+        "disturbance": bool(disturbance),
+        "reset_state": True,     # rising edge triggers the callback
+    })
+    rospy.sleep(0.05)            # short pulse
+    # Drop the flag so you can trigger it again later
+    dr_client.update_configuration({"reset_state": False})
+
+    sim.send_control(torch.tensor([0.0, 0.0]))
+
+def publish_meta():
+    meta = {
+        "mppi_model": dynamics.__class__.__name__,
+        "sim_model": model_choice,
+        "track_choice": track_choice,
+        "dt": CONFIG["dt"],
+        "mppi": CONFIG["mppi"],
+    }
+    meta_pub.publish(json.dumps(meta))
 
 if __name__ == "__main__":
+
+    model_choice = 2
+
+    meta_pub = rospy.Publisher("mppi_meta", String, queue_size=1, latch=True)
     rospy.init_node("mppi_ros_node")
     car_number = rospy.get_param("~car_number", 1)
+
+    # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
+    cum_expected_cost = 0.0
 
     # 1) Load your existing YAML config
     CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
     cfg = CONFIG["mppi"]
 
-    # dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+    dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
-    dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+    # dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
     # 2) Create ROS “simulator”
     sim = SimulatorROS(car_number)
@@ -388,6 +293,12 @@ if __name__ == "__main__":
 
     counter = 0
     global_path_message_rate = 5  # publish 1 every 5 control loops
+
+    # Reset the simulator
+    dr_client = Client("/dart_simulator_node", timeout=2.0)
+
+    reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=model_choice)
+    publish_meta()
 
     while not rospy.is_shutdown():
         # making sure that while waiting the actions are zero
