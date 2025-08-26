@@ -14,14 +14,14 @@ mppi:
   device: "cpu"
   mppi_mode: "simple"  # halton-spline, simple
   sampling_method: "random"   # halton, random
-  num_samples: 50
+  num_samples: 30
   horizon: 12                 # At least 12 for Halton Sampling
-  lambda_: 0.1
-  u_min: [0.0, -0.8]
-  u_max: [0.5, 0.8]
-  noise_sigma: [[0.1, 0.], [0., 0.2]]
+  lambda_: 0.1 # 0.051
+  u_min: [0.0, -1.0]
+  u_max: [1.0, 1.0]
+  noise_sigma: [[0.5, 0.], [0., 0.5]] # [[0.1, 0.], [0., 0.2]] # [[0.5, 0.], [0., 0.5]]
   update_cov: False
-  rollout_var_discount: 0.95
+  rollout_var_discount: 0.95 # 0.99
   sample_null_action: True
   noise_abs_cost: False
   filter_u: True

@@ -42,12 +42,14 @@ class SimulatorROS:
 
         self._vx = 0.0
         self._vy = 0.0
+        self._omega = 0.0
 
         rospy.Subscriber(f"/vx_{car_number}", Float32, self._vx_cb)
         rospy.Subscriber(f"/vy_{car_number}", Float32, self._vy_cb)
+        rospy.Subscriber(f"/omega_{car_number}", Float32, self._omega_cb)
 
         # Set velocity target
-        self.V_target = 0.5
+        # self.V_target = 0.5
 
         self.rviz_rollouts_pub = rospy.Publisher(
             f"/rviz_rollouts_{self.car_number}",
@@ -72,6 +74,8 @@ class SimulatorROS:
     def _vy_cb(self, msg):
         self._vy = msg.data
 
+    def _omega_cb(self, msg):
+        self._omega = msg.data
 
 
     def get_current_state(self):
@@ -93,9 +97,10 @@ class SimulatorROS:
         # Use latest velocities
         vx = self._vx
         vy = self._vy
+        omega = self._omega
 
-        # Build a 1×5 tensor: [x, y, yaw, vx, vy]
-        state = torch.tensor([[pos.x, pos.y, yaw, vx, vy]], dtype=torch.float32)
+        # Build a 1×6 tensor: [x, y, yaw, vx, vy, omega]
+        state = torch.tensor([[pos.x, pos.y, yaw, vx, vy, omega]], dtype=torch.float32)
         return state
 
 
@@ -113,7 +118,7 @@ class SimulatorROS:
         self.throttle_pub.publish(throttle)
         self.steer_pub.publish(steering)
 
-        rospy.loginfo(f"throttle={throttle:.3f}, steering={steering:.3f}")
+        #rospy.loginfo(f"throttle={throttle:.3f}, steering={steering:.3f}")
 
     def generate_track(self, x_vals_global_path, y_vals_global_path):
         # produce and send out global path message to rviz, which contains information about the track (i.e. the global path)
@@ -169,7 +174,7 @@ class SimulatorROS:
     def publish_path(self, U: torch.Tensor,):
         """
         Visualize the full MPPI-mean control sequence by rolling out
-        through the exact Kinematic_Bicycle.step dynamics.
+        through the dynamics.step dynamics.
 
         U: shape (T,2) array of [throttle, steering].
         Requires self.dynamics(state, action, t) → (next_state, _).

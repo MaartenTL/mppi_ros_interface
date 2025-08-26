@@ -15,7 +15,7 @@ from dynamics import OmnidirectionalPointRobotDynamics, Kinematic_Bicycle, Dynam
 from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
 from dynamic_reconfigure.client import Client
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 import json
 
 
@@ -39,7 +39,7 @@ class ROSObjective:
         self.k_vals_global_path,\
         self.k_4_local_path = generate_path_data(track_choice)
 
-        self.V_target = 4 # 2.5 # 2.5  # target velocity
+        self.V_target = 2.5 # 4  # target velocity
 
         self.q_lat   =  5.0
         self.q_lag   =  2.0
@@ -241,17 +241,16 @@ def publish_meta():
         "track_choice": track_choice,
         "dt": CONFIG["dt"],
         "mppi": CONFIG["mppi"],
+        "V_target": obj.V_target,
     }
     meta_pub.publish(json.dumps(meta))
 
 if __name__ == "__main__":
-
-    model_choice = 2
-
     meta_pub = rospy.Publisher("mppi_meta", String, queue_size=1, latch=True)
     rospy.init_node("mppi_ros_node")
     car_number = rospy.get_param("~car_number", 1)
 
+    mppi_comp_time_pub = rospy.Publisher(f'mppi_comptime_'+ str(car_number), Float32, queue_size=10)
     # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
 
@@ -259,9 +258,11 @@ if __name__ == "__main__":
     CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
     cfg = CONFIG["mppi"]
 
-    dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+    model_choice = 2
 
-    # dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+    # dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+
+    dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
     # 2) Create ROS “simulator”
     sim = SimulatorROS(car_number)
@@ -344,6 +345,8 @@ if __name__ == "__main__":
 
         # print(f"Inputs of the rollouts: {planner.perturbed_action}")
         # print(f"States: {planner.states}")
+
+        mppi_comp_time_pub.publish(elapsed_time)
         if elapsed_time > 0.05:
 
             print(f"MPPI computation time: {elapsed_time:.4f} seconds")

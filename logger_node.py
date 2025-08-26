@@ -8,6 +8,7 @@ from threading import Lock
 import datetime
 from std_msgs.msg import Float32, Float32MultiArray, Int32, String
 import json
+import numpy as np
 
 def quat_to_yaw(qx, qy, qz, qw):
     # yaw from quaternion
@@ -17,19 +18,20 @@ def quat_to_yaw(qx, qy, qz, qw):
 
 class DARTLogger:
     def __init__(self):
-        self.seen = {"pose": False, "throttle": False, "steering": False}
+        self.seen = {"pose": False, "throttle": False, "steering": False, "comp": False}
         self.ready = False
 
         car = rospy.get_param("~car_number", 1)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/dart_log_car{car}_{timestamp}.csv")
-        rate_hz = rospy.get_param("~rate", 50)
+        rate_hz = rospy.get_param("~rate", 20) # equal to timestep from simulator
 
         self.lock = Lock()
         self.data = {
             "t": None, "x": None, "y": None, "yaw": None,
             "vx": None, "vy": None, "omega": None,
-            "throttle": None, "steering": None
+            "throttle": None, "steering": None,
+            "comp_sat": None
         }
 
         rospy.Subscriber(f"/vicon/jetracer{car}", PoseWithCovarianceStamped, self.cb_pose, queue_size=50)
@@ -38,17 +40,19 @@ class DARTLogger:
         rospy.Subscriber(f"/omega_{car}", Float32, self.cb_omega, queue_size=100)
         rospy.Subscriber(f"/throttle_{car}", Float32, self.cb_throttle, queue_size=100)
         rospy.Subscriber(f"/steering_{car}", Float32, self.cb_steer, queue_size=100)
+        rospy.Subscriber(f"/mppi_comptime_{car}", Float32, self.cb_comp, queue_size=100)
 
 
-        self.meta = {"mppi_model": "unknown", "sim_model": "unknown", "track_choice": "unknown", "dt": float('nan'), "mppi": "unknown"}
+        self.meta = { "mppi": "unknown", "mppi_model": "unknown", "sim_model": "unknown", "track_choice": "unknown", "dt": float('nan'), "V_target": float('nan')}
         rospy.Subscriber("mppi_meta", String, self.cb_meta, queue_size=1)
 
         self.outfile = out
         self.csvfile = open(self.outfile, "w", newline="")
         self.writer = csv.writer(self.csvfile)
         self.writer.writerow([
-            "mppi_model", "sim_model", "track_choice", "dt",
+            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target",
             "t", "x", "y", "yaw", "vx", "vy", "omega", "throttle", "steering", "speed", "beta",
+            "comp_sat"
             # # selected rollout prediction:
             # "sel_ref_x", "sel_ref_y", "sel_ref_yaw",
             # "sel_x", "sel_y", "sel_yaw", "sel_vx", "sel_vy", "sel_omega",
@@ -106,6 +110,15 @@ class DARTLogger:
             self.seen["steering"] = True
             self.data["steering"] = float(msg.data)
 
+    def cb_comp(self, msg):
+        with self.lock:
+            self.seen["comp"] = True
+
+            if float(msg.data) > self.meta["dt"]:
+                self.data["comp_sat"] = 1
+            else:
+                self.data["comp_sat"] = 0
+
     def cb_meta(self, msg):
         try:
             d = json.loads(msg.data)
@@ -142,7 +155,7 @@ class DARTLogger:
                 return
 
             if not self.ready:
-                if self.seen["pose"] and (self.seen["throttle"] or self.seen["steering"]):
+                if self.seen["pose"] and (self.seen["throttle"] or self.seen["steering"]) and self.seen["comp"]:
                     self.ready = True
                 else:
                     return
@@ -168,20 +181,24 @@ class DARTLogger:
                     sim_model = "SVGP_slippery"
 
                 meta_vals = [
+
+                    self.meta["mppi"],
                     self.meta["mppi_model"], sim_model,
-                    self.meta["track_choice"], self.meta["dt"]
+                    self.meta["track_choice"], self.meta["dt"],
+                    self.meta["V_target"],
                 ]
                 self.meta_written_once = True
             else:
                 # write blanks after the first time
-                meta_vals = ["", "", "", ""]
+                meta_vals = ["", "", "", "", "", ""]
 
             row = [
                 *meta_vals,
                 self.data["t"], self.data["x"], self.data["y"], self.data["yaw"],
                 self.data["vx"], self.data["vy"], self.data["omega"],
                 self.data["throttle"], self.data["steering"],math.hypot(self.data["vx"], self.data["vy"]),
-                math.atan2(self.data["vy"], self.data["vx"])
+                math.atan2(self.data["vy"], self.data["vx"]),
+                self.data["comp_sat"]
                 #speed, beta,
                 # selected block (skip t at index 0)
                 # *sel_f[1:4],  # ref_x, ref_y, ref_yaw

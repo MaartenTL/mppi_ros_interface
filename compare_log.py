@@ -138,6 +138,7 @@ def summarise_run(df, csv_path):
     dt = np.diff(t, prepend=t[0]); dt[0] = 0.0
     mean_dt = float(np.mean(dt)) if len(dt) else np.nan
     n = int(len(df))
+    sum_comp_sat = sum(df["comp_sat"])
 
     # Kinematics
     if "speed" in df.columns and df["speed"].notna().any():
@@ -184,13 +185,13 @@ def summarise_run(df, csv_path):
     # Controls
     thr = df["throttle"].to_numpy(float) if "throttle" in df.columns else np.full(n, np.nan)
     ste = df["steering"].to_numpy(float) if "steering" in df.columns else np.full(n, np.nan)
-    dste = derive(ste, t)
+    # dste = derive(ste, t)
 
     thr_mean = float(np.nanmean(thr))
     thr_l1   = float(area_l1(thr, t))
     ste_rms  = float(nanrms(ste))
-    ste_energy = float(area_l2(ste, t))       # ∫ steer^2 dt
-    ste_rate_energy = float(area_l2(dste, t)) # ∫ (d/dt steer)^2 dt
+    # ste_energy = float(area_l2(ste, t))       # ∫ steer^2 dt
+    # ste_rate_energy = float(area_l2(dste, t)) # ∫ (d/dt steer)^2 dt
 
     # Sideslip if available
     if "beta" in df.columns:
@@ -203,8 +204,8 @@ def summarise_run(df, csv_path):
         beta_mean_abs = beta_p95 = beta_max = np.nan
 
     return {
-        "file": csv_path,
-        "mppi_model": df["mppi_model"][0], "sim_model": df["sim_model"][0], "track_choice": df["track_choice"][0], "dt": df["dt"][0],
+        "file": csv_path, "mppi_model": df["mppi_model"][0], "sim_model": df["sim_model"][0],
+        "track_choice": df["track_choice"][0], "dt": df["dt"][0],"comp_sat": sum_comp_sat,
         "duration_s": T, "samples": n, "mean_dt_s": mean_dt,
         "distance_m": dist, "speed_mean": speed_mean, "speed_max": speed_max,
         "lat_mean_abs_m": lat_mean_abs, "lat_rms_m": lat_rms, "lat_max_abs_m": lat_max_abs,
@@ -214,7 +215,7 @@ def summarise_run(df, csv_path):
         "abs_lat_per_s_m": abs_lat_per_s, "pos_err_per_s_m": pos_per_s,
         "tib_<5cm": tib[0.05], "tib_<10cm": tib[0.10], "tib_<20cm": tib[0.20],
         "thr_mean": thr_mean, "int_abs_thr": thr_l1,
-        "ste_rms": ste_rms, "ste_rate_energy": ste_rate_energy,
+        "ste_rms": ste_rms, # "ste_rate_energy": ste_rate_energy,
         "beta_mean_abs_deg": beta_mean_abs, "beta_max_deg": beta_max,
     }
 
@@ -297,7 +298,7 @@ def main():
     summ_df = pd.DataFrame(summaries)
     # Order cols (nice reading)
     preferred = [
-        "file","mppi_model","sim_model","track_choice","dt",
+        "file","mppi_model","sim_model","track_choice","dt","comp_sat",
         "duration_s","samples","mean_dt_s",
         "distance_m","speed_mean","speed_max",
         "lat_mean_abs_m","lat_rms_m","lat_max_abs_m",
@@ -305,7 +306,7 @@ def main():
         "pos_mean_m","pos_rms_m","pos_max_m",
         "int_abs_lat_m_s","abs_lat_per_s_m","int_pos_m_s","pos_err_per_s_m",
         "tib_<5cm","tib_<10cm","tib_<20cm",
-        "thr_mean","int_abs_thr","ste_rms","ste_rate_energy",
+        "thr_mean","int_abs_thr","ste_rms", # "ste_rate_energy",
         "beta_mean_abs_deg","beta_max_deg"
     ]
     cols = [c for c in preferred if c in summ_df.columns] + [c for c in summ_df.columns if c not in preferred]
