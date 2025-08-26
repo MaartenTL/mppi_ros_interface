@@ -56,6 +56,8 @@ class Kinematic_Bicycle:
         vy = vy #s Taken from the ROS simulator
         w = w
 
+        # CHANGE THIS SO THAT vy and w ARE TAKEN AS THE STATES INSTEAD OF THE CALCULATED VALUES!! 
+
         new_states = torch.stack([x, y, yaw, vx, vy, w], dim=1)
 
         return new_states,  actions
