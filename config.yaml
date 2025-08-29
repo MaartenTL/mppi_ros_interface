@@ -1,34 +1,21 @@
-goal: [100.0, 1.0]
-
-
-circle:
-  center: [0.0, 0.0]
-  radius: 1.0
-  period_steps: 200    # how many planner steps per full lap
-
 device: "cpu"
 dt: 0.05 # 0.05
 steps: 1000
 
 mppi: 
   device: "cpu"
-  mppi_mode: "simple"  # halton-spline, simple
-  sampling_method: "random"   # halton, random
-  num_samples: 30
+  mppi_mode: "halton-spline"  # halton-spline, simple
+  sampling_method: "halton"   # halton, random
+  num_samples: 100
   horizon: 12                 # At least 12 for Halton Sampling
-  lambda_: 0.1 # 0.051
+  lambda_: 0.051 # 0.051
   u_min: [0.0, -1.0]
   u_max: [1.0, 1.0]
-  noise_sigma: [[0.5, 0.], [0., 0.5]] # [[0.1, 0.], [0., 0.2]] # [[0.5, 0.], [0., 0.5]]
+  noise_sigma: [[0.8, 0.], [0., 1.5]] # [[0.8, 0.], [0., 0.8]] # [[0.1, 0.], [0., 0.2]] [[0.5, 0.], [0., 0.5]]
   update_cov: False
-  rollout_var_discount: 0.95 # 0.99
+  rollout_var_discount: 0.999 # 0.95
   sample_null_action: True
   noise_abs_cost: False
   filter_u: True
   use_priors: True
   u_per_command: 12
-
-simulator:
-  urdf: "pointRobot.urdf"
-  mode: "vel"
-  render: True

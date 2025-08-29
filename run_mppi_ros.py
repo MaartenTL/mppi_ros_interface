@@ -24,7 +24,17 @@ abs_path = os.path.dirname(os.path.abspath(__file__))
 from visualization_msgs.msg import MarkerArray
 from std_msgs.msg import Float32MultiArray, Int32
 
+class MPPIWeights:
+    def __init__(self):
+        self.q_lat = 5.0
+        self.q_lag = 0.2
+        self.q_head = 1.0
+        self.q_v = 0.1
+        self.q_vy = 0.1
+        self.q_omega = 0.1  # rate of change (aggresive steering)
 
+        self.q_u_throttle = 1.0
+        self.q_u_steering = 1.0
 
 class ROSObjective:
     def __init__(self, track_choice, N, dt, device="cpu"):
@@ -39,17 +49,9 @@ class ROSObjective:
         self.k_vals_global_path,\
         self.k_4_local_path = generate_path_data(track_choice)
 
-        self.V_target = 2.5 # 4  # target velocity
+        self.V_target = 2.5 # 5  # target velocity
 
-        self.q_lat   =  5.0
-        self.q_lag   =  2.0
-        self.q_head  =  0.1
-        self.q_v     =  0.1
-        self.q_vy    =  0.5
-        self.q_omega =  0.1 # rate of change (aggresive steering)
-
-        self.q_u_throttle   = 1.0
-        self.q_u_steering   = 1.0
+        self.weight   =  MPPIWeights()
 
         self.N = N
         self.time_horizon = N * dt
@@ -101,12 +103,12 @@ class ROSObjective:
         speed = torch.sqrt(vx ** 2 + vy ** 2)
         speed_err = speed - V_target
 
-        cost = (self.q_lat * lat_err ** 2
-                + self.q_lag * lag_err ** 2
-                + self.q_head * head_err ** 2
-                + self.q_v * speed_err ** 2
-                + self.q_vy * vy ** 2
-                + self.q_omega * omega ** 2)
+        cost = (self.weight.q_lat * lat_err ** 2
+                + self.weight.q_lag * lag_err ** 2
+                + self.weight.q_head * head_err ** 2
+                + self.weight.q_v * speed_err ** 2
+                + self.weight.q_vy * vy ** 2
+                + self.weight.q_omega * omega ** 2)
         return cost
 
 

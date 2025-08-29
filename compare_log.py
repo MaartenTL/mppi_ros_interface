@@ -271,8 +271,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", nargs="+", required=True,
                     help="One or more CSV *filenames* or absolute paths (extension optional).")
-    ap.add_argument("--out", default="summaries/compare.csv", help="Summary CSV path (default: summaries/compare.csv).")
-    ap.add_argument("--save-figs", default="summaries/figs", help="Folder to save figures (default: figs/).")
+    ap.add_argument("--out", default="/home/maarten/Documents/Thesis/log_Dart/summaries/compare.csv", help="Summary CSV path (default: summaries/compare.csv).")
+    ap.add_argument("--save-figs", default="/home/maarten/Documents/Thesis/log_Dart/summaries/figs", help="Folder to save figures (default: figs/).")
     args = ap.parse_args()
 
 
