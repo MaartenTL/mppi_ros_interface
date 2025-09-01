@@ -1,6 +1,7 @@
 import torch
 from dart_dynamic_models import model_functions,load_SVGPModel_actuator_dynamics_analytic
 import numpy as np
+import sys
 
 mf = model_functions()
 
@@ -39,12 +40,11 @@ class Kinematic_Bicycle:
 
         acc_x = Fx / mf.m_self  # acceleration in the longitudinal direction
 
-        # simple bycicle nominal model - using centre of mass as reference point
-        w = vx * np.tan(steering_angle) / (mf.lr_self + mf.lf_self)  # angular velocity
+        w = vx * torch.tan(steering_angle) / (mf.lr_self + mf.lf_self)  # angular velocity
         vy = mf.l_COM_self * w
 
-        xdot1 = vx * np.cos(yaw) - vy * np.sin(yaw)
-        xdot2 = vx * np.sin(yaw) + vy * np.cos(yaw)
+        xdot1 = vx * torch.cos(yaw) - vy * torch.sin(yaw)
+        xdot2 = vx * torch.sin(yaw) + vy * torch.cos(yaw)
         xdot3 = w
         xdot4 = acc_x
 
@@ -99,8 +99,8 @@ class Dynamic_Bicycle:
                                                            Fy_wheel_r, mf.lf_self, mf.lr_self, mf.m_self, mf.Jz_self)
 
 
-        xdot1 = vx * np.cos(yaw) - vy * np.sin(yaw)
-        xdot2 = vx * np.sin(yaw) + vy * np.cos(yaw)
+        xdot1 = vx * torch.cos(yaw) - vy * torch.sin(yaw)
+        xdot2 = vx * torch.sin(yaw) + vy * torch.cos(yaw)
         xdot3 = w
         xdot4 = acc_x
         xdot5 = acc_y

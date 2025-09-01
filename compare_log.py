@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import re
 
 from path_track_definitions import generate_path_data
 
@@ -138,7 +139,7 @@ def summarise_run(df, csv_path):
     dt = np.diff(t, prepend=t[0]); dt[0] = 0.0
     mean_dt = float(np.mean(dt)) if len(dt) else np.nan
     n = int(len(df))
-    sum_comp_sat = sum(df["comp_sat"])
+    mean_comp_time = sum(df["comp_time"])/len(df["comp_time"])
 
     # Kinematics
     if "speed" in df.columns and df["speed"].notna().any():
@@ -203,10 +204,13 @@ def summarise_run(df, csv_path):
     else:
         beta_mean_abs = beta_p95 = beta_max = np.nan
 
+
+    mean_lap_time = sum(df["lap_time"]) / df["max_laps"][0]  # Divide by number of laps done
+
     return {
         "file": csv_path, "mppi_model": df["mppi_model"][0], "sim_model": df["sim_model"][0],
-        "track_choice": df["track_choice"][0], "dt": df["dt"][0],"comp_sat": sum_comp_sat,
-        "duration_s": T, "samples": n, "mean_dt_s": mean_dt,
+        "track_choice": df["track_choice"][0], "dt": df["dt"][0],"mean_comp_time": mean_comp_time,
+        "duration_s": T, "samples": n, "mean_dt_s": mean_dt, "mean_lap_time": mean_lap_time,
         "distance_m": dist, "speed_mean": speed_mean, "speed_max": speed_max,
         "lat_mean_abs_m": lat_mean_abs, "lat_rms_m": lat_rms, "lat_max_abs_m": lat_max_abs,
         "lag_mean_abs_m": lag_mean_abs, "lag_rms_m": lag_rms,
@@ -267,14 +271,44 @@ def load_and_prepare(csv_path):
     df = compute_track_errors(df, track_choice)
     return df
 
+def ensure_csv_ext(s: str) -> str:
+    return s if s.lower().endswith(".csv") else s + ".csv"
+
+def resolve_path(tok: str) -> str:
+    tok = ensure_csv_ext(tok)
+    return tok if os.path.isabs(tok) else os.path.join(BASE_DIR, tok)
+
+def clean_label(path: str) -> str:
+    """basename without extension, safe for folder names"""
+    b = os.path.splitext(os.path.basename(path))[0]
+    # replace anything odd with underscore (optional)
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", b)
+
+def build_run_id(labels):
+    """Join one or more labels to form the folder name"""
+    return "__vs__".join(labels)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", nargs="+", required=True,
                     help="One or more CSV *filenames* or absolute paths (extension optional).")
-    ap.add_argument("--out", default="/home/maarten/Documents/Thesis/log_Dart/summaries/compare.csv", help="Summary CSV path (default: summaries/compare.csv).")
-    ap.add_argument("--save-figs", default="/home/maarten/Documents/Thesis/log_Dart/summaries/figs", help="Folder to save figures (default: figs/).")
+    ap.add_argument("--out", help="Summary CSV path (default: summaries/filename/compare.csv).")
+    ap.add_argument("--save_figs", help="Folder to save figures (default: summaries/filename/figs/).")
     args = ap.parse_args()
 
+
+    # Resolve all paths and labels
+    csv_paths = [resolve_path(tok) for tok in args.csv]
+    labels = [clean_label(p) for p in csv_paths]
+    run_id = build_run_id(labels)
+
+    # Per-run output root: <BASE_DIR>/summaries/<run_id>/
+    default_root = os.path.join(BASE_DIR, "summaries", run_id)
+    fig_dir = args.save_figs if args.save_figs else os.path.join(default_root, "figs")
+    out_csv = args.out if args.out else os.path.join(default_root, "compare.csv")
+
+    os.makedirs(fig_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
 
     summaries = []
     first = True
@@ -298,8 +332,8 @@ def main():
     summ_df = pd.DataFrame(summaries)
     # Order cols (nice reading)
     preferred = [
-        "file","mppi_model","sim_model","track_choice","dt","comp_sat",
-        "duration_s","samples","mean_dt_s",
+        "file","mppi_model","sim_model","track_choice","dt","mean_comp_time",
+        "duration_s","samples","mean_dt_s","mean_lap_time",
         "distance_m","speed_mean","speed_max",
         "lat_mean_abs_m","lat_rms_m","lat_max_abs_m",
         "lag_mean_abs_m","lag_rms_m",
@@ -322,21 +356,17 @@ def main():
     plt.figure("XY");
     plt.plot(x_path, y_path, linestyle="--", linewidth=1, label="track")
 
-    # Print a compact view
-    with pd.option_context("display.max_columns", None, "display.width", 160, "display.precision", 4):
-        print("\n=== Run Summary ===")
-        print(summ_df.to_string(index=False))
+    # os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+    summ_df.to_csv(out_csv, index=False)
+    print(f"\nSaved summary to: {out_csv}")
 
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    summ_df.to_csv(args.out, index=False)
-    print(f"\nSaved summary to: {args.out}")
-
-    os.makedirs(args.save_figs, exist_ok=True)
+    # os.makedirs(args.save_figs, exist_ok=True)
     for num in plt.get_fignums():
         fig = plt.figure(num)
         fig.tight_layout()
-        fig.savefig(os.path.join(args.save_figs, f"fig_{num}.png"), dpi=150)
-    print(f"Saved figures to: {args.save_figs}")
+        ax = fig.get_axes()[0]
+        fig.savefig(os.path.join(fig_dir, f"{ax.get_title()}.png"), dpi=150)
+    print(f"Saved figures to: {fig_dir}")
     plt.show()
 
 if __name__ == "__main__":

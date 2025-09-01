@@ -10,6 +10,7 @@ from functions_for_controllers import find_s_of_closest_point_on_global_path, pr
 import numpy as np
 from visualization_msgs.msg import MarkerArray, Marker
 import tf
+import time
 
 class SimulatorROS:
     def __init__(self, car_number):
@@ -62,7 +63,9 @@ class SimulatorROS:
             queue_size=1
         )
 
-        self.dynamics = 0.0
+        # Are set in the run_mppi_ros.py script
+        self.dynamics = None
+        self.vizdynamics = None
 
     def _pose_cb(self, msg):
         with self._lock:
@@ -78,7 +81,7 @@ class SimulatorROS:
         self._omega = msg.data
 
 
-    def get_current_state(self):
+    def get_current_state(self, dynamics):
         """
         Returns a torch.Tensor of shape [1,3] = [x, y, yaw],
         or None if we haven't received a pose yet.
@@ -100,7 +103,7 @@ class SimulatorROS:
         omega = self._omega
 
         # Build a 1×6 tensor: [x, y, yaw, vx, vy, omega]
-        state = torch.tensor([[pos.x, pos.y, yaw, vx, vy, omega]], dtype=torch.float32)
+        state = torch.tensor([[pos.x, pos.y, yaw, vx, vy, omega]], dtype=torch.float32, device=dynamics._device)
         return state
 
 
@@ -111,6 +114,7 @@ class SimulatorROS:
           action[1] → steering
         """
         # Convert to float
+
         throttle = float(action[0].item())
         steering = float(action[1].item())
 
@@ -180,6 +184,7 @@ class SimulatorROS:
         Requires self.dynamics(state, action, t) → (next_state, _).
         """
         # 1) Setup MarkerArray
+
         ma = MarkerArray()
         now = rospy.Time.now()
         clear = Marker();
@@ -187,7 +192,7 @@ class SimulatorROS:
         ma.markers.append(clear)
 
         # 2) Get the full starting state [x,y,yaw,vx,vy]
-        s0 = self.get_current_state()  # torch.Tensor [1,5]
+        s0 = self.get_current_state(self.vizdynamics)  # torch.Tensor [1,5]
 
         state = s0
 
@@ -196,15 +201,12 @@ class SimulatorROS:
         pts = []
         p = Point(x = state[0,0].item(), y = state[0,1].item(), z =0.0)
         pts.append(p)
-
         for t in range(T):
-            state, _ = self.dynamics.step(state, torch.tensor([[U[t,0], U[t, 1]]], dtype=torch.float32), t)
-            # print(f"states of chosen input: {state}")
+            state, _ = self.vizdynamics.step(state, torch.tensor([[U[t, 0], U[t, 1]]], dtype=torch.float32), t)
             x = state[0,0].item()
             y = state[0,1].item()
             p = Point(x=x, y=y, z=0.0)
             pts.append(p)
-
         m = Marker()
         m.header.frame_id = "map"
         m.header.stamp = now

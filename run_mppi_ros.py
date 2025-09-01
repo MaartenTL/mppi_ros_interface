@@ -18,6 +18,7 @@ from dynamic_reconfigure.client import Client
 from std_msgs.msg import String, Float32
 import json
 
+import inspect
 
 abs_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -76,6 +77,8 @@ class ROSObjective:
         self.wrap_high = int(0.80 * self.path_len)  # “high” band near end
         self.lap_count = 0
         self.lap_pub = rospy.Publisher("lap_count", Int32, queue_size=1, latch=True)
+        self.lap_start_time = time.time()
+        self.lap_time_pub = rospy.Publisher("lap_time", Float32, queue_size=1)
 
 
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
@@ -91,8 +94,7 @@ class ROSObjective:
         x, y, yaw, vx, vy, omega = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4], state[:, 5]
         ref_x, ref_y, ref_yaw, V_target = self.get_current_goal()  # each a scalar tensor
 
-        # print(f"Counter: {self.counter}")
-        # print(f"x: {x}, y: {y}, yaw: {yaw}, vx: {vx}, vy: {vy}, omega: {omega}")
+
         # errors
         dx = x - ref_x
         dy = y - ref_y
@@ -130,22 +132,28 @@ class ROSObjective:
             y_vals_global_path, self.previous_path_index, estimated_ds)
 
         self.s = s
-        # print(f"s: {s}")
-        # print(f"path index: {self.current_path_index}")
+
         self.previous_path_index = self.current_path_index
         # ------ HIGH LEVEL SOLVER ------
-
-
         if self.counter == 0:
 
             # Check which lap the DART simualator is on
             if (self.current_path_index < prev_idx and
                     prev_idx >= self.wrap_high and
                     self.current_path_index <= self.wrap_low):
+
+                lap_time = time.time() - self.lap_start_time
+                if self.lap_count > 0:
+                    self.lap_time_pub.publish(lap_time)
+
+                self.lap_start_time = time.time()
+
+
                 self.lap_count += 1
                 self.lap_pub.publish(Int32(self.lap_count))
                 rospy.loginfo(
                     f"[mppi_ros] Lap {self.lap_count} detected (index {prev_idx} → {self.current_path_index}).")
+
 
             # Obtain new reference track for this timestep of MPPI
             self.X0 = self.produce_X0_global(
@@ -172,7 +180,7 @@ class ROSObjective:
             self.rviz_local_path_pub.publish(marray)
 
 
-        objective = torch.tensor(self.X0[self.counter, :])
+        objective = torch.tensor(self.X0[self.counter, :], device=self.device)
 
         self.counter = self.counter + 1
         return objective
@@ -183,8 +191,6 @@ class ROSObjective:
         Returns an (N×4) array: [x, y, yaw, V_target].
         """
         # 1) decide the look‐ahead in meters
-        total_horizon = self.time_horizon  # e.g. N*dt
-
         total_horizon = self.V_target * self.time_horizon
         # create N+1 sample points from s_start → s_start + total_horizon
         s_refs = np.linspace(s_start,
@@ -244,6 +250,14 @@ def publish_meta():
         "dt": CONFIG["dt"],
         "mppi": CONFIG["mppi"],
         "V_target": obj.V_target,
+        "q_lat": obj.weight.q_lat,
+        "q_lag": obj.weight.q_lag,
+        "q_head": obj.weight.q_head,
+        "q_v": obj.weight.q_v,
+        "q_vy": obj.weight.q_vy,
+        "q_omega": obj.weight.q_omega,
+        "q_u_throttle": obj.weight.q_u_throttle,
+        "q_u_steering": obj.weight.q_u_steering,
     }
     meta_pub.publish(json.dumps(meta))
 
@@ -252,7 +266,8 @@ if __name__ == "__main__":
     rospy.init_node("mppi_ros_node")
     car_number = rospy.get_param("~car_number", 1)
 
-    mppi_comp_time_pub = rospy.Publisher(f'mppi_comptime_'+ str(car_number), Float32, queue_size=10)
+    comptime_publisher = rospy.Publisher('comptime_' + str(car_number), Float32, queue_size=1)
+
     # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
 
@@ -262,12 +277,17 @@ if __name__ == "__main__":
 
     model_choice = 2
 
+    # 2) Create ROS “simulator”
+    sim = SimulatorROS(car_number)
+
     # dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
     dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
-    # 2) Create ROS “simulator”
-    sim = SimulatorROS(car_number)
+    # set dynamics for visualisation
+    sim.vizdynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device="cpu")
+
+
 
     # DEMO ARENA TRACK 8x14
     track_choice = "racetrack_vicon_2"
@@ -279,8 +299,9 @@ if __name__ == "__main__":
 
     sim.dynamics = dynamics
 
+
     # 3) Objective
-    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], device="cpu")
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], device=CONFIG["device"])
 
     global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path)
 
@@ -303,12 +324,20 @@ if __name__ == "__main__":
     reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=model_choice)
     publish_meta()
 
+    # compile_mode = "reduce-overhead"
+    # try:
+    #     dynamics.step = torch.compile(dynamics.step, mode=compile_mode, fullgraph=True)
+    #     obj.compute_running_cost = torch.compile(obj.compute_running_cost, mode=compile_mode, fullgraph=True)
+    #     print("[compile] enabled:", compile_mode)
+    # except Exception as e:
+    #     print("[compile] disabled:", e)
+
     while not rospy.is_shutdown():
         # making sure that while waiting the actions are zero
         # sim.send_control(torch.tensor([0.0, 0.0]))
         # input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
 
-        state = sim.get_current_state()
+        state = sim.get_current_state(dynamics)
         obj.current_state = state  # update the current state in the objective, which updates the goal
         obj.counter = 0
 
@@ -317,26 +346,34 @@ if __name__ == "__main__":
             rate.sleep()
             continue
 
-
         start_time = time.time()
-
-        # 5) Compute MPPI action
-        action = planner.command(state)
-        # get the candidate trajectories
-        rollouts = planner.states.detach().cpu().numpy()
-        #print(f"perturbed_action: {planner.perturbed_action}")
-        # publish them
-        sim.publish_rollouts(rollouts)
-
-        end_time = time.time()
-        elapsed_time = end_time - start_time
+        with torch.inference_mode(): # don't need to keep track of the gradients
+            # 5) Compute MPPI action
+            action = planner.command(state)
 
 
-        # publish entire control input
-        sim.publish_path(action.detach().cpu())
 
         # 6) Send to vehicle
         sim.send_control(action[0])
+
+        elapsed_time = time.time() - start_time
+        print(f"Elapsed MPPI computation time: {elapsed_time}")
+
+
+        # # get the candidate trajectories
+        # rollouts = planner.states.detach()
+        #
+        # # publish them
+        # time_rollouts = time.time()
+        # sim.publish_rollouts(rollouts)
+        # print(f"Publish rollouts time: {time.time() - time_rollouts}")
+        #
+        # # publish entire control input
+        # time_publish_path = time.time()
+        # sim.publish_path(action.detach())
+        # print(f"Publish path time: {time.time() - time_publish_path}")
+
+
         # this is just to republish global path message every now and then
         if counter > global_path_message_rate:
             sim.rviz_global_path_publisher.publish(global_path_message)
@@ -345,10 +382,7 @@ if __name__ == "__main__":
         # update counter
         counter = counter + 1
 
-        # print(f"Inputs of the rollouts: {planner.perturbed_action}")
-        # print(f"States: {planner.states}")
-
-        mppi_comp_time_pub.publish(elapsed_time)
+        comptime_publisher.publish(elapsed_time)
         if elapsed_time > 0.05:
 
             print(f"MPPI computation time: {elapsed_time:.4f} seconds")

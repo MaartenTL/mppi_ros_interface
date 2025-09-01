@@ -31,7 +31,8 @@ class DARTLogger:
             "t": None, "x": None, "y": None, "yaw": None,
             "vx": None, "vy": None, "omega": None,
             "throttle": None, "steering": None,
-            "comp_sat": None
+            "comp_time": None, "lap_time": 0.0,
+            "max_laps": None,
         }
 
         rospy.Subscriber(f"/vicon/jetracer{car}", PoseWithCovarianceStamped, self.cb_pose, queue_size=50)
@@ -40,7 +41,7 @@ class DARTLogger:
         rospy.Subscriber(f"/omega_{car}", Float32, self.cb_omega, queue_size=100)
         rospy.Subscriber(f"/throttle_{car}", Float32, self.cb_throttle, queue_size=100)
         rospy.Subscriber(f"/steering_{car}", Float32, self.cb_steer, queue_size=100)
-        rospy.Subscriber(f"/mppi_comptime_{car}", Float32, self.cb_comp, queue_size=100)
+        rospy.Subscriber(f"/comptime_{car}", Float32, self.cb_comp, queue_size=100)
 
 
         self.meta = { "mppi": "unknown", "mppi_model": "unknown", "sim_model": "unknown", "track_choice": "unknown", "dt": float('nan'), "V_target": float('nan')}
@@ -50,9 +51,9 @@ class DARTLogger:
         self.csvfile = open(self.outfile, "w", newline="")
         self.writer = csv.writer(self.csvfile)
         self.writer.writerow([
-            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target",
+            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target","max_laps", "lap_time",
             "t", "x", "y", "yaw", "vx", "vy", "omega", "throttle", "steering", "speed", "beta",
-            "comp_sat"
+            "comp_time",
             # # selected rollout prediction:
             # "sel_ref_x", "sel_ref_y", "sel_ref_yaw",
             # "sel_x", "sel_y", "sel_yaw", "sel_vx", "sel_vy", "sel_omega",
@@ -80,10 +81,20 @@ class DARTLogger:
 
         self.max_laps = rospy.get_param("~laps_to_log", 5)
         self.logging_enabled = True
-        rospy.Subscriber("lap_count", Int32, self.cb_lap, queue_size=10)
+        rospy.Subscriber("lap_count", Int32, self.cb_lap_count, queue_size=1)
 
         self.meta_received = False
         self.meta_written_once = False
+
+        rospy.Subscriber("lap_time", Float32, self.cb_lap_time, queue_size=1)
+        self.new_lap_time = False
+
+    def cb_lap_time(self, msg):
+        with self.lock:
+            self.data["lap_time"] = msg.data
+            rospy.loginfo(f"[logger_node] Lap time: {msg.data}")
+            self.new_lap_time = True
+
 
     def cb_pose(self, msg):
         with self.lock:
@@ -113,11 +124,7 @@ class DARTLogger:
     def cb_comp(self, msg):
         with self.lock:
             self.seen["comp"] = True
-
-            if float(msg.data) > self.meta["dt"]:
-                self.data["comp_sat"] = 1
-            else:
-                self.data["comp_sat"] = 0
+            self.data["comp_time"] = float(msg.data)
 
     def cb_meta(self, msg):
         try:
@@ -130,7 +137,7 @@ class DARTLogger:
         except Exception as e:
             rospy.logwarn(f"[logger_node] meta parse failed: {e}")
 
-    def cb_lap(self, msg):
+    def cb_lap_count(self, msg):
         try:
             lap = int(msg.data)
         except Exception:
@@ -160,14 +167,6 @@ class DARTLogger:
                 else:
                     return
 
-            # sel = self.data["mppi_sel"]
-            # roll = self.data["mppi_roll"]
-
-            # fill with NaNs when not yet available
-            def fill(vals, n):
-                if vals is None: return [float("nan")] * n
-                return vals
-
             if self.meta_received and not self.meta_written_once:
                 sim_model = self.meta["sim_model"]
 
@@ -185,20 +184,25 @@ class DARTLogger:
                     self.meta["mppi"],
                     self.meta["mppi_model"], sim_model,
                     self.meta["track_choice"], self.meta["dt"],
-                    self.meta["V_target"],
+                    self.meta["V_target"],self.max_laps,
                 ]
                 self.meta_written_once = True
             else:
                 # write blanks after the first time
-                meta_vals = ["", "", "", "", "", ""]
+                meta_vals = ["", "", "", "", "", "",""]
+
+            if self.new_lap_time:
+                self.new_lap_time = False
+            else:
+                self.data["lap_time"] = 0.0
 
             row = [
-                *meta_vals,
+                *meta_vals, self.data["lap_time"],
                 self.data["t"], self.data["x"], self.data["y"], self.data["yaw"],
                 self.data["vx"], self.data["vy"], self.data["omega"],
                 self.data["throttle"], self.data["steering"],math.hypot(self.data["vx"], self.data["vy"]),
                 math.atan2(self.data["vy"], self.data["vx"]),
-                self.data["comp_sat"]
+                self.data["comp_time"],
                 #speed, beta,
                 # selected block (skip t at index 0)
                 # *sel_f[1:4],  # ref_x, ref_y, ref_yaw

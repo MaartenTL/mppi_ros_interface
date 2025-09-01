@@ -110,6 +110,7 @@ class model_functions():
     a_stfr_self, b_stfr_self,d_stfr_self,e_stfr_self,
     k_stdn_self,k_pitch_self,w_natural_Hz_pitch_self] = model_parameters()
 
+
     def __init__(self):
         # this is just a class to collect all the functions that are used to model the dynamics
         pass
@@ -124,7 +125,7 @@ class model_functions():
             w_s = 0.5 * (torch.tanh(30*(steering_command+c_s))+1)
             steering_angle1 = b_s * torch.tanh(a_s * (steering_command + c_s)) 
             steering_angle2 = d_s * torch.tanh(e_s * (steering_command + c_s))
-            steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2 
+            steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2
         else: # use numpy implementation
             w_s = 0.5 * (np.tanh(30*(steering_command+c_s))+1)
             steering_angle1 = b_s * np.tanh(a_s * (steering_command + c_s))
@@ -153,7 +154,9 @@ class model_functions():
         vy_wheel_f,vy_wheel_r = self.evalaute_wheel_lateral_velocities(vx,vy,w,steer_angle,lf,lr)
 
         if torch.is_tensor(vx):
-            steer_angle_tensor = steer_angle * torch.Tensor([1]) # .cuda()
+
+            steer_angle_tensor = steer_angle # * torch.Tensor([1]) # only needed when steer_angle is not a tensor
+
             vx_wheel_f = torch.cos(-steer_angle_tensor) * vx - torch.sin(-steer_angle_tensor)*(vy + lf*w)
             
             Vx_correction_term_f = 1 * torch.exp(-3*vx_wheel_f**2)
@@ -257,8 +260,9 @@ class model_functions():
     def produce_past_action_coefficients_2nd_oder_critically_damped(self,w_natural_Hz,length):
         # Generate the k coefficients for past actions
         #[d,c,b,damping,w_natural] = self.transform_parameters_norm_2_real()
-        k_vec = torch.zeros((length,1))#.cuda()
-        k_dev_vec = torch.zeros((length,1))#.cuda()
+        k_vec = torch.zeros((length,1)).cuda()
+        k_dev_vec = torch.zeros((length,1)).cuda()
+
         for i in range(length):
             k_vec[i], k_dev_vec[i] = self.impulse_response_2n_oder_critically_damped(i*self.dt,w_natural_Hz) # 
         # the dt is really important to get the amplitude right
@@ -284,7 +288,8 @@ class model_functions():
 
     def produce_past_action_coefficients_1st_oder(self,C,length,dt):
         if torch.is_tensor(C):
-            k_vec = torch.zeros((length,1))#.cuda()
+            k_vec = torch.zeros((length,1)).cuda()
+
             for i in range(length):
                 k_vec[i] = self.impulse_response_1st_oder(i*dt,C) 
             k_vec = k_vec * dt # the dt is really important to get the amplitude right
@@ -308,7 +313,7 @@ class model_functions():
 
     def produce_past_action_coefficients_1st_oder_step_response(self,C,length,dt):
             if torch.is_tensor(C): # torch implementation
-                k_vec = torch.zeros((length,1))#.cuda()
+                k_vec = torch.zeros((length,1)).cuda()
                 for i in range(1,length):
                     k_vec[i] = self.step_response_1st_oder(i*dt,C) - self.step_response_1st_oder((i-1)*dt,C)
                 k_vec = k_vec.double()
@@ -1382,10 +1387,10 @@ class friction_curve_model(torch.nn.Sequential,model_functions):
     def __init__(self):
         super(friction_curve_model, self).__init__()
         # initialize parameters NOTE that the initial values should be [0,1], i.e. they should be the normalized value.
-        self.register_parameter(name='a', param=torch.nn.Parameter(torch.Tensor([0.5])))#.cuda()))
-        self.register_parameter(name='b', param=torch.nn.Parameter(torch.Tensor([0.5])))#.cuda()))
-        self.register_parameter(name='c', param=torch.nn.Parameter(torch.Tensor([0.5])))#.cuda()))
-        self.register_parameter(name='d', param=torch.nn.Parameter(torch.Tensor([0.5])))#.cuda()))
+        self.register_parameter(name='a', param=torch.nn.Parameter(torch.Tensor([0.5]).cuda()))
+        self.register_parameter(name='b', param=torch.nn.Parameter(torch.Tensor([0.5]).cuda()))
+        self.register_parameter(name='c', param=torch.nn.Parameter(torch.Tensor([0.5]).cuda()))
+        self.register_parameter(name='d', param=torch.nn.Parameter(torch.Tensor([0.5]).cuda()))
 
 
     def transform_parameters_norm_2_real(self):
