@@ -1,13 +1,13 @@
-device: "cuda:0" # cuda:0, cpu
+device: "cpu" # cuda:0, cpu
 dt: 0.05
 steps: 1000
 
 mppi: 
-  device: "cuda:0" # cuda:0, cpu
+  device: "cpu" # cuda:0, cpu
   mppi_mode: "halton-spline"  # halton-spline, simple
   sampling_method: "halton"   # halton, random
-  num_samples: 2000 # 100
-  horizon: 12                 # At least 12 for Halton Sampling
+  num_samples: 100 # 100
+  horizon: 20                 # At least 12 for Halton Sampling
   lambda_: 0.051 # 0.051
   u_min: [0.0, -1.0]
   u_max: [1.0, 1.0]

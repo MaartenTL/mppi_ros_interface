@@ -2,28 +2,24 @@
 import rospy
 import yaml
 import torch
-import math
 import os
-import sys
 import time
 
 from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
 from functions_for_controllers import find_s_of_closest_point_on_global_path, produce_track,produce_marker_array_rviz, produce_marker_rviz, steer_angle_2_command
 import numpy as np
-from dynamics import OmnidirectionalPointRobotDynamics, Kinematic_Bicycle, Dynamic_Bicycle
+from dynamics import Kinematic_Bicycle, Dynamic_Bicycle
 from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
 from dynamic_reconfigure.client import Client
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String, Float32, MultiArrayDimension, Float32MultiArray, Int32
 import json
 
-import inspect
 
 abs_path = os.path.dirname(os.path.abspath(__file__))
 
 from visualization_msgs.msg import MarkerArray
-from std_msgs.msg import Float32MultiArray, Int32
 
 class MPPIWeights:
     def __init__(self):
@@ -80,6 +76,9 @@ class ROSObjective:
         self.lap_start_time = time.time()
         self.lap_time_pub = rospy.Publisher("lap_time", Float32, queue_size=1)
 
+        self.ref_yaw_cos = 0.0
+        self.ref_yaw_sin = 0.0
+
 
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
         # wrap into [-π, π]
@@ -94,13 +93,12 @@ class ROSObjective:
         x, y, yaw, vx, vy, omega = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4], state[:, 5]
         ref_x, ref_y, ref_yaw, V_target = self.get_current_goal()  # each a scalar tensor
 
-
         # errors
         dx = x - ref_x
         dy = y - ref_y
 
-        lag_err = dx * torch.cos(ref_yaw) + dy * torch.sin(ref_yaw)
-        lat_err = -dx * torch.sin(ref_yaw) + dy * torch.cos(ref_yaw)
+        lag_err = dx * self.ref_yaw_cos[self.counter-1] + dy * self.ref_yaw_sin[self.counter-1]
+        lat_err = -dx * self.ref_yaw_sin[self.counter-1] + dy * self.ref_yaw_cos[self.counter-1]
         head_err = self.wrap_angle(yaw - ref_yaw)
         speed = torch.sqrt(vx ** 2 + vy ** 2)
         speed_err = speed - V_target
@@ -111,31 +109,29 @@ class ROSObjective:
                 + self.weight.q_v * speed_err ** 2
                 + self.weight.q_vy * vy ** 2
                 + self.weight.q_omega * omega ** 2)
+
         return cost
 
 
     def get_current_goal(self):
-        x_vals_global_path = self.x_vals_global_path
-        y_vals_global_path = self.y_vals_global_path
-        s_vals_global_path = self.s_vals_global_path
-
-        # produce Chebyshev coefficients that represent local path
-        Ds_forward = 1.2 * self.V_target * self.time_horizon #  self.dtt * self.high_level_solver_generator_obj.N
-        Ds_back = 0.0 # this is the length of the path that is behind the car
-        estimated_ds = self.current_state[0,3] * self.dt
-
-        prev_idx = self.previous_path_index
-
-        s, self.current_path_index = find_s_of_closest_point_on_global_path(
-            np.array([self.current_state[0,0].item(),self.current_state[0,1].item()]),
-            s_vals_global_path, x_vals_global_path,
-            y_vals_global_path, self.previous_path_index, estimated_ds)
-
-        self.s = s
-
-        self.previous_path_index = self.current_path_index
-        # ------ HIGH LEVEL SOLVER ------
         if self.counter == 0:
+            cs = self.current_state[0].detach().to('cpu')  # [x, y, yaw, vx, vy]
+            xy = cs[:2].numpy()
+            x_vals_global_path = self.x_vals_global_path
+            y_vals_global_path = self.y_vals_global_path
+            s_vals_global_path = self.s_vals_global_path
+
+            estimated_ds = self.current_state[0, 3] * self.dt
+
+            prev_idx = self.previous_path_index
+            # ------ HIGH LEVEL SOLVER ------
+
+            self.s, self.current_path_index = find_s_of_closest_point_on_global_path(
+                xy,
+                s_vals_global_path, x_vals_global_path,
+                y_vals_global_path, self.previous_path_index, estimated_ds)
+
+            self.previous_path_index = self.current_path_index
 
             # Check which lap the DART simualator is on
             if (self.current_path_index < prev_idx and
@@ -156,33 +152,36 @@ class ROSObjective:
 
 
             # Obtain new reference track for this timestep of MPPI
-            self.X0 = self.produce_X0_global(
+            self.X0 = torch.tensor(self.produce_X0_global(
                 V_target=self.V_target,
                 N=self.N,
                 s_start=self.s
-            )
+            ), dtype= torch.float32, device = self.device)
 
-        if self.counter == 0:
             Ds_forward = 1.2 * self.V_target * self.time_horizon
             Ds_back = 0.0
 
-            mask = (self.s_4_local_path >= s - Ds_back) & \
-                   (self.s_4_local_path <= s + Ds_forward)
+            mask = (self.s_4_local_path >= self.s - Ds_back) & \
+                   (self.s_4_local_path <= self.s + Ds_forward)
             idxs = np.nonzero(mask)[0]
 
             local_x = self.x_4_local_path[idxs]
             local_y = self.y_4_local_path[idxs]
 
-            # Use your existing produce_marker_array_rviz utility:
+
+
             rgba = [0.0, 1.0, 0.0, 0.8]  # bright green
             marker_type = 4  # sphere list or LINE_STRIP
             marray = produce_marker_array_rviz(local_x, local_y, rgba, marker_type)
             self.rviz_local_path_pub.publish(marray)
 
 
-        objective = torch.tensor(self.X0[self.counter, :], device=self.device)
+            self.ref_yaw_cos = torch.cos(self.X0[:, 2])
+            self.ref_yaw_sin = torch.sin(self.X0[:, 2])
 
-        self.counter = self.counter + 1
+        objective = self.X0[self.counter, :] # "cpu") # Faster on cpu
+
+        self.counter += 1
         return objective
 
     def produce_X0_global(self, V_target, N, s_start):
@@ -267,6 +266,7 @@ if __name__ == "__main__":
     car_number = rospy.get_param("~car_number", 1)
 
     comptime_publisher = rospy.Publisher('comptime_' + str(car_number), Float32, queue_size=1)
+    action_publisher = rospy.Publisher('mppi_action', Float32MultiArray, queue_size=1)
 
     # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
@@ -284,10 +284,9 @@ if __name__ == "__main__":
 
     dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
+
     # set dynamics for visualisation
     sim.vizdynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device="cpu")
-
-
 
     # DEMO ARENA TRACK 8x14
     track_choice = "racetrack_vicon_2"
@@ -337,7 +336,7 @@ if __name__ == "__main__":
         # sim.send_control(torch.tensor([0.0, 0.0]))
         # input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
 
-        state = sim.get_current_state(dynamics)
+        state = sim.get_current_state(dynamics._device)
         obj.current_state = state  # update the current state in the objective, which updates the goal
         obj.counter = 0
 
@@ -351,28 +350,21 @@ if __name__ == "__main__":
             # 5) Compute MPPI action
             action = planner.command(state)
 
-
-
         # 6) Send to vehicle
         sim.send_control(action[0])
 
-        elapsed_time = time.time() - start_time
-        print(f"Elapsed MPPI computation time: {elapsed_time}")
 
-
-        # # get the candidate trajectories
+        # # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
         # rollouts = planner.states.detach()
-        #
         # # publish them
-        # time_rollouts = time.time()
         # sim.publish_rollouts(rollouts)
-        # print(f"Publish rollouts time: {time.time() - time_rollouts}")
-        #
-        # # publish entire control input
-        # time_publish_path = time.time()
-        # sim.publish_path(action.detach())
-        # print(f"Publish path time: {time.time() - time_publish_path}")
 
+        action_msg = Float32MultiArray()
+        action_msg.data = action.reshape(-1).tolist() # list(action.to(torch.float32))
+        action_publisher.publish(action_msg)
+
+        # publish entire control input (NOW DONE IN LOGGER NODE)
+        # sim.publish_path(action.detach())
 
         # this is just to republish global path message every now and then
         if counter > global_path_message_rate:
@@ -382,6 +374,8 @@ if __name__ == "__main__":
         # update counter
         counter = counter + 1
 
+        elapsed_time = time.time() - start_time
+        # print(f"Elapsed MPPI computation time: {elapsed_time}")
         comptime_publisher.publish(elapsed_time)
         if elapsed_time > 0.05:
 
