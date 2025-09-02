@@ -227,7 +227,7 @@ def plot_one(df, label=None):
 
     # XY
     plt.figure("XY"); plt.plot(df["x"], df["y"], label=label);
-    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
+    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory Comparison")
     plt.legend()
 
     # Speed & vy
@@ -239,19 +239,27 @@ def plot_one(df, label=None):
     plt.figure("Omega/Beta")
     plt.plot(df["time"], df["omega"], label=f"omega {label}" if label else "omega")
     if "beta" in df: plt.plot(df["time"], np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
-    plt.xlabel("time [s]"); plt.ylabel("yaw rate / sideslip"); plt.title("Yaw rate and Sideslip"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("yaw rate / sideslip"); plt.title("Yaw Rate and Sideslip"); plt.legend()
     # Controls
     if "throttle" in df and "steering" in df:
         plt.figure("Controls")
         plt.plot(df["time"], df["throttle"], label=f"throttle {label}" if label else "throttle")
         plt.plot(df["time"], df["steering"], label=f"steering {label}" if label else "steering")
         plt.xlabel("time [s]"); plt.ylabel("command"); plt.title("Control Inputs"); plt.legend()
+    
+    
     # Errors
-    plt.figure("Errors")
+    plt.figure("Lateral Error")
     plt.plot(df["time"], df["lat_err"], label=f"lat {label}" if label else "lat")
+    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
+
+    plt.figure("Lag Error")
     plt.plot(df["time"], df["lag_err"], label=f"lag {label}" if label else "lag")
+    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
+
+    plt.figure("Pos Error")
     plt.plot(df["time"], df["pos_err"], label=f"pos {label}" if label else "pos")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Tracking error vs time"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
 
 def load_and_prepare(csv_path):
     df = pd.read_csv(csv_path)
