@@ -117,13 +117,15 @@ def compute_track_errors(df, track_choice):
      dx_ds, dy_ds, _, _,
      _, _) = generate_path_data(track_choice)
 
-    idx = nearest_path_indices(df["x"].values, df["y"].values, x_path, y_path)
-    x_ref = x_path[idx]; y_ref = y_path[idx]
+    idx = nearest_path_indices(df["x"].values, df["y"].values, x_path, y_path)    # What comes out as idx?? Scalar or an array?
+    x_ref = x_path[idx]; y_ref = y_path[idx]            # ISN'T THE REFERENCE JUST A SCALAR HERE?? WHILE df["x"].values and y are arrays???
     psi_ref = np.arctan2(dy_ds[idx], dx_ds[idx])
 
+    # If this is actually done correctly, i.e. idx is an array how is then the lag error calculated? As isn't the closest point of an y,x always at the same lag position? 
+    
     dx = df["x"].values - x_ref
     dy = df["y"].values - y_ref
-    lag_err = dx * np.cos(psi_ref) + dy * np.sin(psi_ref)
+    lag_err = dx * np.cos(psi_ref) + dy * np.sin(psi_ref)     
     lat_err = -dx * np.sin(psi_ref) + dy * np.cos(psi_ref)
     pos_err = np.sqrt(lag_err**2 + lat_err**2)
 
@@ -260,6 +262,30 @@ def plot_one(df, label=None):
     plt.figure("Pos Error")
     plt.plot(df["time"], df["pos_err"], label=f"pos {label}" if label else "pos")
     plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
+
+    t = df["time"].to_numpy(float)
+    dt = np.diff(t, prepend=t[0]); dt[0] = 0.0
+
+    lat = df["lat_err"].to_numpy(float)
+    pos = df["pos_err"].to_numpy(float)
+
+    cum_abs_lat = np.cumsum(np.abs(lat) * dt)  # ∫|lat| dt
+    cum_pos     = np.cumsum(pos * dt)          # ∫||pos|| dt
+    cum_lat2    = np.cumsum((lat**2) * dt)     # ∫lat^2 dt (optional)
+
+    plt.figure("Cumulative Error (abs)")
+    plt.plot(t, cum_abs_lat, label=f"∫|lat| dt — {label}")
+    plt.plot(t, cum_pos,     label=f"∫pos dt — {label}")
+    plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
+    plt.legend()
+
+    # Optional RMS trend over time (nice for seeing convergence)
+    rms_pos = np.sqrt(cum_pos**2 / (t - t[0] + 1e-9))  # not standard RMS; better use cum_lat2:
+    rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
+    plt.figure("RMS Lat (trend)")
+    plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
+    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
+
 
 def load_and_prepare(csv_path):
     df = pd.read_csv(csv_path)
