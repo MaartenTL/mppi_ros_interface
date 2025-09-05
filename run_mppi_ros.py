@@ -25,16 +25,16 @@ class MPPIWeights:
     def __init__(self):
         self.q_lat = 5.0
         self.q_lag = 0.2
-        self.q_head = 1.0
+        self.q_head = 0.1
         self.q_v = 0.1
-        self.q_vy = 0.1
-        self.q_omega = 0.1  # rate of change (aggresive steering)
+        self.q_vy = 0.0
+        self.q_omega = 0.0
 
         self.q_u_throttle = 1.0
         self.q_u_steering = 1.0
 
 class ROSObjective:
-    def __init__(self, track_choice, N, dt, device="cpu"):
+    def __init__(self, track_choice, N, dt, V_target, device="cpu"):
 
         self.s_vals_global_path,\
         self.x_vals_global_path,\
@@ -46,7 +46,7 @@ class ROSObjective:
         self.k_vals_global_path,\
         self.k_4_local_path = generate_path_data(track_choice)
 
-        self.V_target = 2.5 # 5  # target velocity
+        self.V_target = V_target  # target velocity
 
         self.weight   =  MPPIWeights()
 
@@ -83,6 +83,68 @@ class ROSObjective:
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
         # wrap into [-π, π]
         return torch.atan2(torch.sin(x), torch.cos(x))
+
+    def compute_expected_cost(self, state: torch.Tensor):
+        x = [tensor[0,0].item() for tensor in state]
+        y = [tensor[0,1].item() for tensor in state]
+        yaw = [tensor[0,2].item() for tensor in state]
+        vx = [tensor[0,3].item() for tensor in state]
+        vy = [tensor[0,4].item() for tensor in state]
+        omega = [tensor[0,5].item() for tensor in state]
+
+        # cs = self.current_state[0].detach().to('cpu')  # [x, y, yaw, vx, vy]
+        # xy = cs[:2].numpy()
+        # self.current_state = [x[0],y[0],yaw[0]]
+
+        x_vals_global_path = self.x_vals_global_path
+        y_vals_global_path = self.y_vals_global_path
+        s_vals_global_path = self.s_vals_global_path
+
+        estimated_ds = vx[0] * self.dt
+
+        prev_idx = self.previous_path_index
+        # ------ HIGH LEVEL SOLVER ------
+
+        self.s, self.current_path_index = find_s_of_closest_point_on_global_path(
+            [x[0],y[0]],
+            s_vals_global_path, x_vals_global_path,
+            y_vals_global_path, self.previous_path_index, estimated_ds)
+
+        self.previous_path_index = self.current_path_index
+
+        # Obtain new reference track for this timestep of MPPI
+        self.X0 = torch.tensor(self.produce_X0_global(
+            V_target=self.V_target,
+            N=self.N,
+            s_start=self.s
+        ), dtype=torch.float32, device=self.device)
+
+        self.ref_yaw_cos = torch.cos(self.X0[:, 2])
+        self.ref_yaw_sin = torch.sin(self.X0[:, 2])
+
+        ref_x = self.X0[:,0]
+        ref_y = self.X0[:,1]
+        ref_yaw = self.X0[:,2]
+        V_target = self.V_target
+
+
+        dx = torch.tensor(x) - ref_x
+        dy = torch.tensor(y) - ref_y
+        lag_err = dx * self.ref_yaw_cos + dy * self.ref_yaw_sin
+        lat_err = -dx * self.ref_yaw_sin + dy * self.ref_yaw_cos
+        head_err = self.wrap_angle(torch.tensor(yaw) - ref_yaw)
+
+        speed = torch.sqrt(torch.tensor(vx) ** 2 + torch.tensor(vy) ** 2)
+        speed_err = speed - V_target
+
+        expected_cost = (self.weight.q_lat * lat_err ** 2
+                + self.weight.q_lag * lag_err ** 2
+                + self.weight.q_head * head_err ** 2
+                + self.weight.q_v * speed_err ** 2
+                + self.weight.q_vy * torch.Tensor(vy) ** 2
+                + self.weight.q_omega * torch.Tensor(omega) ** 2)
+
+        return expected_cost, self.weight, lat_err, lag_err, head_err, speed_err, torch.Tensor(vy), torch.Tensor(omega)
 
     def compute_running_cost(self, state: torch.Tensor):
         """
@@ -168,8 +230,6 @@ class ROSObjective:
             local_x = self.x_4_local_path[idxs]
             local_y = self.y_4_local_path[idxs]
 
-
-
             rgba = [0.0, 1.0, 0.0, 0.8]  # bright green
             marker_type = 4  # sphere list or LINE_STRIP
             marray = produce_marker_array_rviz(local_x, local_y, rgba, marker_type)
@@ -249,14 +309,6 @@ def publish_meta():
         "dt": CONFIG["dt"],
         "mppi": CONFIG["mppi"],
         "V_target": obj.V_target,
-        "q_lat": obj.weight.q_lat,
-        "q_lag": obj.weight.q_lag,
-        "q_head": obj.weight.q_head,
-        "q_v": obj.weight.q_v,
-        "q_vy": obj.weight.q_vy,
-        "q_omega": obj.weight.q_omega,
-        "q_u_throttle": obj.weight.q_u_throttle,
-        "q_u_steering": obj.weight.q_u_steering,
     }
     meta_pub.publish(json.dumps(meta))
 
@@ -275,18 +327,22 @@ if __name__ == "__main__":
     CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
     cfg = CONFIG["mppi"]
 
-    model_choice = 2
+    if CONFIG["sim_model"] == "kinematic":
+        model_choice = 1
+    elif CONFIG["sim_model"] == "dynamic":
+        model_choice = 2
+    elif CONFIG["sim_model"] == "SVGP":
+        model_choice = 3
+    elif CONFIG["sim_model"] == "SVGP_wet":
+        model_choice = 4
 
     # 2) Create ROS “simulator”
     sim = SimulatorROS(car_number)
 
-    # dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
-
-    dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
-
-
-    # set dynamics for visualisation
-    sim.vizdynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device="cpu")
+    if CONFIG["mppi_model"] == "kinematic":
+        dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+    elif CONFIG["mppi_model"] == "dynamic":
+        dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
     # DEMO ARENA TRACK 8x14
     track_choice = "racetrack_vicon_2"
@@ -300,7 +356,7 @@ if __name__ == "__main__":
 
 
     # 3) Objective
-    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], device=CONFIG["device"])
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], device=CONFIG["device"])
 
     global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path)
 

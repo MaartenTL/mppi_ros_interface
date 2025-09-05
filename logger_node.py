@@ -11,6 +11,8 @@ import json
 import numpy as np
 from dynamics import Kinematic_Bicycle, Dynamic_Bicycle
 from simulator_ros import SimulatorROS
+from run_mppi_ros import ROSObjective
+import torch
 
 def quat_to_yaw(qx, qy, qz, qw):
     # yaw from quaternion
@@ -34,7 +36,11 @@ class DARTLogger:
             "vx": None, "vy": None, "omega": None,
             "throttle": None, "steering": None,
             "comp_time": None, "lap_time": 0.0,
-            "max_laps": None,
+            "max_laps": None, "expected_cost": 0.0,
+        }
+        self.costs = {
+            "lat_cost": 0.0, "lag_cost": 0.0, "heading_cost": 0.0,
+            "speed_cost": 0.0, "vy_cost": 0.0, "omega_cost": 0.0,
         }
 
         rospy.Subscriber(f"/vicon/jetracer{car}", PoseWithCovarianceStamped, self.cb_pose, queue_size=50)
@@ -54,8 +60,9 @@ class DARTLogger:
         self.writer = csv.writer(self.csvfile)
         self.writer.writerow([
             "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target","max_laps", "lap_time",
+            "total expected cost",
             "t", "x", "y", "yaw", "vx", "vy", "omega", "throttle", "steering", "speed", "beta",
-            "comp_time",
+            "comp_time", "lat cost", "lag cost", "heading cost", "speed cost", "vy cost", "omega cost",
             # # selected rollout prediction:
             # "sel_ref_x", "sel_ref_y", "sel_ref_yaw",
             # "sel_x", "sel_y", "sel_yaw", "sel_vx", "sel_vy", "sel_omega",
@@ -68,6 +75,7 @@ class DARTLogger:
             # "roll_vy_mean", "roll_vy_p10", "roll_vy_p50", "roll_vy_p90",
             # "roll_w_mean", "roll_w_p10", "roll_w_p50", "roll_w_p90"
         ])
+
         self.csvfile.flush()
 
         self.timer = rospy.Timer(rospy.Duration(1.0/float(rate_hz)), self.flush_row)
@@ -81,7 +89,7 @@ class DARTLogger:
         #     "mppi_roll": None
         # })
 
-        self.max_laps = rospy.get_param("~laps_to_log", 5)
+        self.max_laps = rospy.get_param("~laps_to_log", 3)
         self.logging_enabled = True
         rospy.Subscriber("lap_count", Int32, self.cb_lap_count, queue_size=1)
 
@@ -93,6 +101,9 @@ class DARTLogger:
 
         rospy.Subscriber("/mppi_action", Float32MultiArray, self.cb_action, queue_size=1)
         self.sim = SimulatorROS(car)
+        self.lap = 0.0
+        self.total_expected_cost = 0.0
+
 
 
     def cb_action(self, msg):
@@ -103,6 +114,25 @@ class DARTLogger:
                 NU = 2
                 action = np.array(msg.data, dtype=np.float32).reshape(T, NU)
                 self.sim.publish_path(action)
+
+                expected_cost, weight, lat_err, lag_err, head_err, speed_err, vy, omega = self.obj.compute_expected_cost(self.sim.states)
+                total_expected_cost = sum(expected_cost)
+                self.data["expected_cost"] = total_expected_cost.item()
+
+
+                total_lat_cost = sum(weight.q_lat * lat_err ** 2)
+                total_lag_cost = sum(weight.q_lag * lag_err ** 2)
+                total_heading_cost = sum(weight.q_head * head_err ** 2)
+                total_speed_cost = sum(weight.q_v * speed_err ** 2)
+                total_vy_cost = sum(weight.q_vy * vy ** 2)
+                total_omega_cost = sum(weight.q_omega * omega ** 2)
+
+                self.costs["lat_cost"] = total_lat_cost.item()
+                self.costs["lag_cost"] = total_lag_cost.item()
+                self.costs["heading_cost"] = total_heading_cost.item()
+                self.costs["speed_cost"] = total_speed_cost.item()
+                self.costs["vy_cost"] = total_vy_cost.item()
+                self.costs["omega_cost"] = total_omega_cost.item()
 
 
     def cb_lap_time(self, msg):
@@ -155,21 +185,10 @@ class DARTLogger:
 
     def cb_lap_count(self, msg):
         try:
-            lap = int(msg.data)
+            self.lap = int(msg.data)
         except Exception:
-            lap = int(float(msg.data))
-        if lap >= self.max_laps and self.logging_enabled:
-            self.logging_enabled = False
-            rospy.loginfo(f"[logger_node] Received lap {lap} ≥ {self.max_laps}. Stopping logging.")
-            try:
-                self.timer.shutdown()
-            except Exception:
-                pass
-            try:
-                self.csvfile.flush()
-                self.csvfile.close()
-            except Exception:
-                pass
+            self.lap = int(float(msg.data))
+
 
     def flush_row(self, _):
         with self.lock:
@@ -200,6 +219,8 @@ class DARTLogger:
                 elif self.meta["mppi_model"] == "Dynamic_Bicycle":
                     self.sim.vizdynamics = Dynamic_Bicycle(self.meta["dt"], device="cpu")
 
+                self.obj = ROSObjective(self.meta["track_choice"],self.meta["mppi"]["horizon"], self.meta["dt"], self.meta["V_target"], "cpu")
+
                 meta_vals = [
 
                     self.meta["mppi"],
@@ -218,30 +239,31 @@ class DARTLogger:
                 self.data["lap_time"] = 0.0
 
             row = [
-                *meta_vals, self.data["lap_time"],
+                *meta_vals, self.data["lap_time"],self.data["expected_cost"],
                 self.data["t"], self.data["x"], self.data["y"], self.data["yaw"],
                 self.data["vx"], self.data["vy"], self.data["omega"],
                 self.data["throttle"], self.data["steering"],math.hypot(self.data["vx"], self.data["vy"]),
                 math.atan2(self.data["vy"], self.data["vx"]),
-                self.data["comp_time"],
-                #speed, beta,
-                # selected block (skip t at index 0)
-                # *sel_f[1:4],  # ref_x, ref_y, ref_yaw
-                # *sel_f[4:10],  # predicted next state x..omega
-                # *sel_f[10:15],  # lat, lag, speed_err, immediate cost, cum cost
-                # # rollout stats (skip t at index 0):
-                # *roll_f[1:]
+                self.data["comp_time"],self.costs["lat_cost"],self.costs["lag_cost"], self.costs["heading_cost"],
+                self.costs["speed_cost"], self.costs["vy_cost"], self.costs["omega_cost"]
             ]
             self.writer.writerow(row)
+
+
             self.csvfile.flush()
 
-    # def cb_mppi_selected(self, msg):
-    #     with self.lock:
-    #         self.data["mppi_sel"] = list(msg.data)
-    #
-    # def cb_mppi_rollouts(self, msg):
-    #     with self.lock:
-    #         self.data["mppi_roll"] = list(msg.data)
+            if self.lap > self.max_laps and self.logging_enabled:
+                self.logging_enabled = False
+                rospy.loginfo(f"[logger_node] Received lap {self.lap} > {self.max_laps}. Stopping logging.")
+                try:
+                    self.timer.shutdown()
+                except Exception:
+                    pass
+                try:
+                    self.csvfile.flush()
+                    self.csvfile.close()
+                except Exception:
+                    pass
 
     def __del__(self):
         try:

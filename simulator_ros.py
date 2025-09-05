@@ -191,7 +191,7 @@ class SimulatorROS:
         clear.action = Marker.DELETEALL
         ma.markers.append(clear)
 
-        # 2) Get the full starting state [x,y,yaw,vx,vy]
+        # 2) Get the full starting state [x,y,yaw,vx,vy,w]
         s0 = self.get_current_state("cpu")  # torch.Tensor [1,5]
 
         state = s0
@@ -201,14 +201,14 @@ class SimulatorROS:
         pts = []
         p = Point(x = state[0,0].item(), y = state[0,1].item(), z =0.0)
         pts.append(p)
-
+        self.states = []
         for t in range(T):
             state, _ = self.vizdynamics.step(state, torch.tensor([[U[t, 0], U[t, 1]]], dtype=torch.float32), t)
             x = state[0,0].item()
             y = state[0,1].item()
             p = Point(x=x, y=y, z=0.0)
             pts.append(p)
-
+            self.states.append(state)
 
         m = Marker()
         m.header.frame_id = "map"

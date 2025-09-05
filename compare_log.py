@@ -14,15 +14,52 @@ mpl.rcParams.update({
 })
 BASE_DIR = "/home/maarten/Documents/Thesis/log_Dart"
 
+def _add_direction_arrows(ax, xs, ys, num=3, color=None, frac_len=0.05, z=3):
+    """Place `num` arrows along polyline (xs, ys).
+    frac_len is the arrow length as a fraction of plot span."""
+
+    xs = np.asarray(xs); ys = np.asarray(ys)
+    if len(xs) < 3:  # need a bit of data
+        return
+    # evenly spaced indices (skip endpoints)
+    idxs = np.linspace(0, len(xs)-1, num+2, dtype=int)[1:-1]
+    # tangent via gradient
+    dx = np.gradient(xs); dy = np.gradient(ys)
+    # arrow length in data units based on axes span
+    xspan = max(ax.get_xlim()) - min(ax.get_xlim())
+    yspan = max(ax.get_ylim()) - min(ax.get_ylim())
+    L = max(xspan, yspan)
+    base = frac_len * L
+
+    ux = dx[idxs]; uy = dy[idxs]
+    n = np.hypot(ux, uy) + 1e-9
+    ux = base * (ux / n); uy = base * (uy / n)
+
+    ax.quiver(xs[idxs], ys[idxs], ux, uy,
+              angles='xy', scale_units='xy', scale=1,
+              width=0.003, headwidth=3, headlength=5, headaxislength=4,
+              color=color, zorder=z, label='_nolegend_')
+
+
 def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     os.makedirs(save_dir, exist_ok=True)
 
     # 1) XY with track
     fig = plt.figure(figsize=(6,6))
+    ax = plt.gca()
     plt.plot(x_path, y_path, linestyle="--", linewidth=1, label="track")
     h, = plt.plot(df["x"], df["y"], label=label)
     plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title(f"Trajectory: {label}")
     plt.legend()
+
+    # Add arrows: first set limits so span is known
+    fig.canvas.draw_idle()
+    ax.relim(); ax.autoscale_view()
+    print("pre test arrows")
+    # three arrows on the **track** (grey)
+    _add_direction_arrows(ax, x_path, y_path, num=3, color="0.5", frac_len=0.06, z=3)
+
+
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_xy.png"), dpi=150)
     plt.close(fig)
@@ -39,28 +76,76 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     # 3) Yaw rate and sideslip
     fig = plt.figure()
     plt.plot(df["time"], df["omega"], label="omega [rad/s]")
-    if "beta" in df: plt.plot(df["time"], np.rad2deg(df["beta"]), label="beta [deg]")
-    plt.xlabel("time [s]"); plt.title(f"Yaw rate & sideslip: {label}"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("omega [rad/s]"); plt.title(f"Yaw rate {label}"); plt.legend()
     fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_omega_beta.png"), dpi=150)
+    fig.savefig(os.path.join(save_dir, f"{label}_omega.png"), dpi=150)
+    plt.close(fig)
+
+    fig = plt.figure()
+    plt.plot(df["time"], np.rad2deg(df["beta"]), label="beta [deg]")
+    plt.xlabel("time [s]"); plt.ylabel("beta [deg]"), plt.title(f"Sideslip: {label}"); plt.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(save_dir, f"{label}_beta.png"), dpi=150)
     plt.close(fig)
 
     # 4) Controls
-    if "throttle" in df and "steering" in df:
-        fig = plt.figure()
-        plt.plot(df["time"], df["throttle"], label="throttle")
-        plt.plot(df["time"], df["steering"], label="steering")
-        plt.xlabel("time [s]"); plt.ylabel("command"); plt.title(f"Controls: {label}"); plt.legend()
-        fig.tight_layout()
-        fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
-        plt.close(fig)
+    fig = plt.figure()
+    plt.plot(df["time"], df["throttle"], label="throttle")
+    plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title(f"Throttle: {label}"); plt.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
+    plt.close(fig)
+
+    fig = plt.figure()
+    plt.plot(df["time"], df["steering"], label="steering")
+    plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title(f"Steering: {label}"); plt.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
+    plt.close(fig)
 
     # 5) Errors
     fig = plt.figure()
     plt.plot(df["time"], df["lat_err"], label="lat [m]")
+    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
+    plt.close(fig)
+
+    fig = plt.figure()
     plt.plot(df["time"], df["lag_err"], label="lag [m]")
+    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
+    plt.close(fig)
+
+    fig = plt.figure()
     plt.plot(df["time"], df["pos_err"], label="pos [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title(f"Tracking errors: {label}"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
+    plt.close(fig)
+
+    t = df["time"].to_numpy(float)
+    dt = np.diff(t, prepend=t[0]); dt[0] = 0.0
+
+    lat = df["lat_err"].to_numpy(float)
+    pos = df["pos_err"].to_numpy(float)
+
+    cum_abs_lat = np.cumsum(np.abs(lat) * dt)  # ∫|lat| dt
+    cum_pos     = np.cumsum(pos * dt)          # ∫||pos|| dt
+    cum_lat2    = np.cumsum((lat**2) * dt)     # ∫lat^2 dt (optional)
+
+    plt.figure("Cumulative Error (abs)")
+    plt.plot(t, cum_abs_lat, label=f"∫|lat| dt — {label}")
+    plt.plot(t, cum_pos,     label=f"∫pos dt — {label}")
+    plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
+    plt.legend()
+
+    # Optional RMS trend over time (nice for seeing convergence)
+    rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
+    fig = plt.figure()
+    plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
+    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
     plt.close(fig)
@@ -117,15 +202,13 @@ def compute_track_errors(df, track_choice):
      dx_ds, dy_ds, _, _,
      _, _) = generate_path_data(track_choice)
 
-    idx = nearest_path_indices(df["x"].values, df["y"].values, x_path, y_path)    # What comes out as idx?? Scalar or an array?
-    x_ref = x_path[idx]; y_ref = y_path[idx]            # ISN'T THE REFERENCE JUST A SCALAR HERE?? WHILE df["x"].values and y are arrays???
+    idx = nearest_path_indices(df["x"].values, df["y"].values, x_path, y_path)
+    x_ref = x_path[idx]; y_ref = y_path[idx]
     psi_ref = np.arctan2(dy_ds[idx], dx_ds[idx])
 
-    # If this is actually done correctly, i.e. idx is an array how is then the lag error calculated? As isn't the closest point of an y,x always at the same lag position? 
-    
     dx = df["x"].values - x_ref
     dy = df["y"].values - y_ref
-    lag_err = dx * np.cos(psi_ref) + dy * np.sin(psi_ref)     
+    lag_err = dx * np.cos(psi_ref) + dy * np.sin(psi_ref)
     lat_err = -dx * np.sin(psi_ref) + dy * np.cos(psi_ref)
     pos_err = np.sqrt(lag_err**2 + lat_err**2)
 
@@ -206,8 +289,8 @@ def summarise_run(df, csv_path):
     else:
         beta_mean_abs = beta_p95 = beta_max = np.nan
 
-
-    mean_lap_time = sum(df["lap_time"]) / df["max_laps"][0]  # Divide by number of laps done
+    print(sum(df["lap_time"]))
+    mean_lap_time = sum(df["lap_time"]) / (df["max_laps"][0] - 1)  # Divide by number of laps done
 
     return {
         "file": csv_path, "mppi_model": df["mppi_model"][0], "sim_model": df["sim_model"][0],
@@ -229,7 +312,7 @@ def plot_one(df, label=None):
 
     # XY
     plt.figure("XY"); plt.plot(df["x"], df["y"], label=label);
-    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory Comparison")
+    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
     plt.legend()
 
     # Speed & vy
@@ -237,19 +320,25 @@ def plot_one(df, label=None):
     plt.plot(df["time"], np.hypot(df["vx"], df["vy"]), label=f"speed {label}" if label else "speed")
     if "vy" in df: plt.plot(df["time"], df["vy"], label=f"vy {label}" if label else "vy")
     plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title("Speed and Lateral Velocity"); plt.legend()
+
     # Yaw rate & beta
-    plt.figure("Omega/Beta")
+    plt.figure("Omega")
     plt.plot(df["time"], df["omega"], label=f"omega {label}" if label else "omega")
-    if "beta" in df: plt.plot(df["time"], np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
-    plt.xlabel("time [s]"); plt.ylabel("yaw rate / sideslip"); plt.title("Yaw Rate and Sideslip"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("yaw rate [rad/s]"); plt.title("Yaw rate"); plt.legend()
+
+    plt.figure("Beta")
+    plt.plot(df["time"], np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
+    plt.xlabel("time [s]"); plt.ylabel("sideslip [deg/s]"); plt.title("Sideslip"); plt.legend()
+
     # Controls
-    if "throttle" in df and "steering" in df:
-        plt.figure("Controls")
-        plt.plot(df["time"], df["throttle"], label=f"throttle {label}" if label else "throttle")
-        plt.plot(df["time"], df["steering"], label=f"steering {label}" if label else "steering")
-        plt.xlabel("time [s]"); plt.ylabel("command"); plt.title("Control Inputs"); plt.legend()
-    
-    
+    plt.figure("Throttle")
+    plt.plot(df["time"], df["throttle"], label=f"throttle {label}" if label else "throttle")
+    plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title("Throttle"); plt.legend()
+
+    plt.figure("Steering")
+    plt.plot(df["time"], df["steering"], label=f"steering {label}" if label else "steering")
+    plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title("Steering"); plt.legend()
+
     # Errors
     plt.figure("Lateral Error")
     plt.plot(df["time"], df["lat_err"], label=f"lat {label}" if label else "lat")
@@ -280,7 +369,6 @@ def plot_one(df, label=None):
     plt.legend()
 
     # Optional RMS trend over time (nice for seeing convergence)
-    rms_pos = np.sqrt(cum_pos**2 / (t - t[0] + 1e-9))  # not standard RMS; better use cum_lat2:
     rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
     plt.figure("RMS Lat (trend)")
     plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
@@ -389,6 +477,13 @@ def main():
     # XY
     plt.figure("XY");
     plt.plot(x_path, y_path, linestyle="--", linewidth=1, label="track")
+    ax = plt.gca()
+    # Add arrows: first set limits so span is known
+    ax.relim();
+    ax.autoscale_view()
+
+    # three arrows on the **track** (grey)
+    _add_direction_arrows(ax, x_path, y_path, num=2, color="0.0", frac_len=0.06, z=3)
 
     # os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     summ_df.to_csv(out_csv, index=False)
