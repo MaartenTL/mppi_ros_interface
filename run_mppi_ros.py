@@ -23,8 +23,8 @@ from visualization_msgs.msg import MarkerArray
 
 class MPPIWeights:
     def __init__(self):
-        self.q_lat = 5.0
-        self.q_lag = 0.2
+        self.q_lat = 10.0
+        self.q_lag = 0.5
         self.q_head = 0.1
         self.q_v = 0.1
         self.q_vy = 0.0
@@ -32,6 +32,14 @@ class MPPIWeights:
 
         self.q_u_throttle = 1.0
         self.q_u_steering = 1.0
+
+        self.ter_q_lat = 0.0 # 10.0
+        self.ter_q_lag = 0.0 # 2.0
+        self.ter_q_head = 0.0 # 1.0
+        self.ter_q_v = 0.0 #1.0
+        self.ter_q_vy = 0.0
+        self.ter_q_omega = 0.0 #0.5
+
 
 class ROSObjective:
     def __init__(self, track_choice, N, dt, V_target, device="cpu"):
@@ -79,6 +87,47 @@ class ROSObjective:
         self.ref_yaw_cos = 0.0
         self.ref_yaw_sin = 0.0
 
+        self.lane_width = 1.0 # 0.60  # m; you can overwrite via ROS param or GUI later
+        self.lane_margin = 0.10  # m; inner safety buffer
+        self.w_lane = 100.0 # 100.0  # weight for lane penalty
+
+        self.left_lane_pub = rospy.Publisher('left_lane', MarkerArray, queue_size=1)
+        self.right_lane_pub = rospy.Publisher('right_lane', MarkerArray, queue_size=1)
+
+    def _softplus_hinge(self, x: torch.Tensor, sharp=20.0):
+        # ≈ max(0, x) but smooth; larger 'sharp' -> steeper wall
+        return torch.log1p(torch.exp(sharp * x)) / sharp
+
+    def terminal_costs(self, states: torch.Tensor, actions: torch.Tensor):
+
+        x, y, yaw, vx, vy, omega = states[:, -1, 0], states[:, -1, 1], states[:, -1, 2], states[:, -1, 3], states[:, -1, 4], states[:, -1, 5]
+        ref_x = self.X0[-1,0]
+        ref_y = self.X0[-1,1]
+        ref_yaw = self.X0[-1,2]
+        V_target = self.X0[-1,3]
+
+        dx = x - ref_x
+        dy = y - ref_y
+
+        lag_err = dx * self.ref_yaw_cos[-1] + dy * self.ref_yaw_sin[-1]
+        lat_err = -dx * self.ref_yaw_sin[-1] + dy * self.ref_yaw_cos[-1]
+        head_err = self.wrap_angle(yaw - ref_yaw)
+        speed = torch.sqrt(vx ** 2 + vy ** 2)
+        speed_err = speed - V_target
+
+        terminal_cost = (self.weight.ter_q_lat * lat_err ** 2
+                + self.weight.ter_q_lag * lag_err ** 2
+                + self.weight.ter_q_head * head_err ** 2
+                + self.weight.ter_q_v * speed_err ** 2
+                + self.weight.ter_q_vy * vy ** 2
+                + self.weight.ter_q_omega * omega ** 2)
+
+        # half_w = self.lane_width * 0.5
+        # excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
+        # c_lane_T = (1.5 * self.w_lane) * self._softplus_hinge(excess_T, sharp=25.0)
+        #
+        # terminal_cost = terminal_cost + c_lane_T
+        return terminal_cost
 
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
         # wrap into [-π, π]
@@ -172,6 +221,17 @@ class ROSObjective:
                 + self.weight.q_vy * vy ** 2
                 + self.weight.q_omega * omega ** 2)
 
+        half_w = self.lane_width * 0.5
+        excess = torch.abs(lat_err) - (half_w - self.lane_margin)
+
+        c_lane = self.w_lane * self._softplus_hinge(excess, 25.0)
+
+        print(f"cost: {cost}")
+        print(f"c_lane: {c_lane}")
+        cost = cost + c_lane
+
+
+
         return cost
 
 
@@ -239,8 +299,28 @@ class ROSObjective:
             self.ref_yaw_cos = torch.cos(self.X0[:, 2])
             self.ref_yaw_sin = torch.sin(self.X0[:, 2])
 
-        objective = self.X0[self.counter, :] # "cpu") # Faster on cpu
+            dx = np.gradient(local_x)
+            dy = np.gradient(local_y)
+            heading = np.arctan2(dy, dx)
 
+            half_w = self.lane_width * 0.5
+            # left/right offset vectors (normal to path)
+            nx = -np.sin(heading)
+            ny = np.cos(heading)
+
+            x_left = local_x + half_w * nx
+            y_left = local_y + half_w * ny
+            x_right = local_x - half_w * nx
+            y_right = local_y - half_w * ny
+
+            rgba = [57.0, 81.0, 100.0, 1.0]
+            marker_type = 4
+            left_msg = produce_marker_array_rviz(x_left, y_left, rgba, marker_type)
+            right_msg = produce_marker_array_rviz(x_right, y_right, rgba, marker_type)
+            self.left_lane_pub.publish(left_msg)
+            self.right_lane_pub.publish(right_msg)
+
+        objective = self.X0[self.counter, :] # "cpu") # Faster on cpu
         self.counter += 1
         return objective
 
@@ -320,6 +400,12 @@ if __name__ == "__main__":
     comptime_publisher = rospy.Publisher('comptime_' + str(car_number), Float32, queue_size=1)
     action_publisher = rospy.Publisher('mppi_action', Float32MultiArray, queue_size=1)
 
+
+
+    pub_safety_value = rospy.Publisher('safety_value', Float32, queue_size=8)
+    pub_safety_value.publish(1)
+
+
     # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
 
@@ -367,6 +453,8 @@ if __name__ == "__main__":
         dynamics=dynamics.step,
         running_cost=obj.compute_running_cost,
     )
+
+    planner.terminal_state_cost = obj.terminal_costs
 
     rate = rospy.Rate(1/CONFIG["dt"])  #
 
@@ -437,4 +525,5 @@ if __name__ == "__main__":
 
             print(f"MPPI computation time: {elapsed_time:.4f} seconds")
         rate.sleep()
+
 
