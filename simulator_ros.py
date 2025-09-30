@@ -118,6 +118,16 @@ class SimulatorROS:
         throttle = float(action[0].item())
         steering = float(action[1].item())
 
+        if throttle > 2.0:
+            throttle = 2
+        elif throttle < -2.0:
+            throttle = -2
+
+        if steering > 2.0:
+            steering = 2
+        elif steering < -2.0:
+            steering = -2
+
         # Publish
         self.throttle_pub.publish(throttle)
         self.steer_pub.publish(steering)
@@ -184,7 +194,6 @@ class SimulatorROS:
         Requires self.dynamics(state, action, t) → (next_state, _).
         """
         # 1) Setup MarkerArray
-
         ma = MarkerArray()
         now = rospy.Time.now()
         clear = Marker();

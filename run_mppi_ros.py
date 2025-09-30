@@ -4,6 +4,7 @@ import yaml
 import torch
 import os
 import time
+import subprocess
 
 from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
@@ -14,35 +15,101 @@ from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
 from dynamic_reconfigure.client import Client
 from std_msgs.msg import String, Float32, MultiArrayDimension, Float32MultiArray, Int32
+from collections import deque
 import json
-
 
 abs_path = os.path.dirname(os.path.abspath(__file__))
 
 from visualization_msgs.msg import MarkerArray
 
+
+class StateDisturber:
+    def __init__(self,
+                 sigma_pos=0.02,        # m
+                 sigma_yaw_deg=0.5,     # deg
+                 sigma_v=0.05,          # m/s for vx, vy
+                 sigma_omega=0.02,      # rad/s
+                 bias_yaw_deg=0.0,      # constant heading bias
+                 seed=42,
+                 latency_steps=0,        # integer delay in control steps
+                 dropout_prob=0.0,       # chance to drop a sample
+                 outlier_prob=0.0,       # chance to inject an outlier
+                 ):
+        rng = np.random.default_rng(seed)
+        self.rng = rng
+        self.sigma = np.array([sigma_pos, sigma_pos,
+                               np.deg2rad(sigma_yaw_deg),
+                               sigma_v, sigma_v, sigma_omega], dtype=float)
+        self.bias = np.array([0.0, 0.0,
+                              np.deg2rad(bias_yaw_deg),
+                              0.0, 0.0, 0.0], dtype=float)
+        self.latency_steps = int(latency_steps)
+        self.buffer = deque(maxlen=max(1, self.latency_steps+1))
+        self.dropout_prob = float(dropout_prob)
+        self.outlier_prob = float(outlier_prob)
+
+
+    def _wrap_angle(self, a):
+        return np.arctan2(np.sin(a), np.cos(a))
+
+    def disturb(self, state_tensor):
+        """
+        state_tensor: torch.Tensor shape [1, 6] (x, y, yaw, vx, vy, omega)
+        returns: disturbed torch.Tensor [1, 6]
+        """
+        s = state_tensor[0].detach().cpu().numpy().astype(float)   # [6]
+
+        if self.rng.random() < self.dropout_prob:
+            # hold last sample (simple dropout model)
+            if len(self.buffer) > 0:
+                s_noisy = self.buffer[-1].copy()
+            else:
+                s_noisy = s.copy()
+        else:
+            noise = self.rng.normal(0.0, self.sigma)
+            s_noisy = s + self.bias + noise
+
+            # occasional outlier
+            if self.rng.random() < self.outlier_prob:
+                s_noisy[:2] += self.rng.normal(0.0, 0.5, size=2)   # 0.5 m spike
+            # wrap yaw
+            s_noisy[2] = self._wrap_angle(s_noisy[2])
+
+        # simple sanity: clamp ridiculous speeds so MPPI doesn't explode
+        s_noisy[3] = float(np.clip(s_noisy[3], -8.0, 8.0))  # vx
+        s_noisy[4] = float(np.clip(s_noisy[4], -8.0, 8.0))  # vy
+        s_noisy[5] = float(np.clip(s_noisy[5], -10.0, 10.0))# omega
+
+        # latency: push to buffer, pop delayed
+        self.buffer.append(s_noisy)
+        if self.latency_steps > 0 and len(self.buffer) > self.latency_steps:
+            s_noisy = self.buffer[-(self.latency_steps+1)]
+        return torch.tensor(s_noisy, dtype=state_tensor.dtype, device=state_tensor.device).unsqueeze(0)
+
 class MPPIWeights:
     def __init__(self):
-        self.q_lat = 10.0
-        self.q_lag = 0.5
-        self.q_head = 0.1
-        self.q_v = 0.1
-        self.q_vy = 0.0
-        self.q_omega = 0.0
+        self.q_lat = 0.5 # 1.0
+        self.q_lag = 0.5 # 1.0
+        self.q_head = 0.25 # 1.0
+        self.q_v = 0.1 # 0.0
+        self.q_vy = 0.2 # 0.0
+        self.q_omega = 0.0 # 0.0
 
-        self.q_u_throttle = 1.0
-        self.q_u_steering = 1.0
+        self.ter_q_lat = self.q_lat * 10.0 # 10.0
+        self.ter_q_lag = self.q_lag * 10.0 # 2.0
+        self.ter_q_head = self.q_head * 10.0 # 1.0
+        self.ter_q_v = self.q_v * 10.0 # 1.0
+        self.ter_q_vy = self.q_vy * 10.0
+        self.ter_q_omega = self.q_omega * 10.0 #0.5
 
-        self.ter_q_lat = 0.0 # 10.0
-        self.ter_q_lag = 0.0 # 2.0
-        self.ter_q_head = 0.0 # 1.0
-        self.ter_q_v = 0.0 #1.0
-        self.ter_q_vy = 0.0
-        self.ter_q_omega = 0.0 #0.5
+        self.q_u_throttle = 0.01
+        self.q_u_steering = 0.01
+
+        self.w_lane =  100.0  # 100.0  # weight for lane penalty
 
 
 class ROSObjective:
-    def __init__(self, track_choice, N, dt, V_target, device="cpu"):
+    def __init__(self, track_choice, N, dt, V_target, config, device="cpu"):
 
         self.s_vals_global_path,\
         self.x_vals_global_path,\
@@ -84,17 +151,19 @@ class ROSObjective:
         self.lap_start_time = time.time()
         self.lap_time_pub = rospy.Publisher("lap_time", Float32, queue_size=1)
 
+        # self.max_laps = config["laps"]
+        # self.stopped_log = False
+
         self.ref_yaw_cos = 0.0
         self.ref_yaw_sin = 0.0
 
         self.lane_width = 1.0 # 0.60  # m; you can overwrite via ROS param or GUI later
-        self.lane_margin = 0.10  # m; inner safety buffer
-        self.w_lane = 100.0 # 100.0  # weight for lane penalty
+        self.lane_margin = 0.05  # m; inner safety buffer
 
         self.left_lane_pub = rospy.Publisher('left_lane', MarkerArray, queue_size=1)
         self.right_lane_pub = rospy.Publisher('right_lane', MarkerArray, queue_size=1)
 
-    def _softplus_hinge(self, x: torch.Tensor, sharp=20.0):
+    def _softplus_hinge(self, x: torch.Tensor, sharp=25.0):
         # ≈ max(0, x) but smooth; larger 'sharp' -> steeper wall
         return torch.log1p(torch.exp(sharp * x)) / sharp
 
@@ -122,11 +191,13 @@ class ROSObjective:
                 + self.weight.ter_q_vy * vy ** 2
                 + self.weight.ter_q_omega * omega ** 2)
 
-        # half_w = self.lane_width * 0.5
-        # excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
-        # c_lane_T = (1.5 * self.w_lane) * self._softplus_hinge(excess_T, sharp=25.0)
-        #
-        # terminal_cost = terminal_cost + c_lane_T
+        # ADD CONTROL INPUT COSTS
+
+        half_w = self.lane_width * 0.5
+        excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
+        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T,), 0, 300)
+
+        terminal_cost = terminal_cost + c_lane_T
         return terminal_cost
 
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
@@ -224,13 +295,8 @@ class ROSObjective:
         half_w = self.lane_width * 0.5
         excess = torch.abs(lat_err) - (half_w - self.lane_margin)
 
-        c_lane = self.w_lane * self._softplus_hinge(excess, 25.0)
-
-        print(f"cost: {cost}")
-        print(f"c_lane: {c_lane}")
+        c_lane = torch.clamp(self.weight.w_lane * self._softplus_hinge(excess), 0, 300)
         cost = cost + c_lane
-
-
 
         return cost
 
@@ -271,6 +337,13 @@ class ROSObjective:
                 self.lap_pub.publish(Int32(self.lap_count))
                 rospy.loginfo(
                     f"[mppi_ros] Lap {self.lap_count} detected (index {prev_idx} → {self.current_path_index}).")
+
+                # if self.lap_count > self.max_laps and not self.stopped_log:
+                #     self.stopped_log = True
+                #     kill_rosbag(rospy.get_param("~bag_node", "/bag_recorder"))
+                #     rospy.loginfo("Maximum number of laps reached, rosbag recording stopped")
+
+
 
 
             # Obtain new reference track for this timestep of MPPI
@@ -392,19 +465,33 @@ def publish_meta():
     }
     meta_pub.publish(json.dumps(meta))
 
+def kill_rosbag(name):
+    rospy.logwarn("Stopping recorder by killing node: %s", name)
+    try:
+        subprocess.call(['rosnode', 'kill', name])  # sends SIGINT → bag closes cleanly
+    except Exception as e:
+        rospy.logerr("Failed to kill %s: %s", name, e)
+
 if __name__ == "__main__":
+
+    dist = StateDisturber(
+        sigma_pos=0.00,  # 2 cm std
+        sigma_yaw_deg= 0.0,  # 0.4° std
+        sigma_v=0.0,  # 0.05 m/s std
+        sigma_omega=0.0,  # 0.02 rad/s std
+        bias_yaw_deg=0.0,  # set e.g. 0.8 for a fixed bias
+        latency_steps=0,  # try 1-2 to feel 1–2*dt delay
+        dropout_prob=0.0,
+        outlier_prob=0.0,
+        seed=123
+    )
+
     meta_pub = rospy.Publisher("mppi_meta", String, queue_size=1, latch=True)
     rospy.init_node("mppi_ros_node")
     car_number = rospy.get_param("~car_number", 1)
 
     comptime_publisher = rospy.Publisher('comptime_' + str(car_number), Float32, queue_size=1)
     action_publisher = rospy.Publisher('mppi_action', Float32MultiArray, queue_size=1)
-
-
-
-    pub_safety_value = rospy.Publisher('safety_value', Float32, queue_size=8)
-    pub_safety_value.publish(1)
-
 
     # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
@@ -430,8 +517,7 @@ if __name__ == "__main__":
     elif CONFIG["mppi_model"] == "dynamic":
         dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
 
-    # DEMO ARENA TRACK 8x14
-    track_choice = "racetrack_vicon_2"
+    track_choice = CONFIG["track"]
 
     #sim.s_vals_global_path = s_vals_global_path
     #sim.x_vals_global_path = x_vals_global_path
@@ -439,10 +525,11 @@ if __name__ == "__main__":
     #sim.global_path_message = global_path_message
 
     sim.dynamics = dynamics
+    sim.vizdynamics = dynamics
 
 
     # 3) Objective
-    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], device=CONFIG["device"])
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG, device=CONFIG["device"])
 
     global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path)
 
@@ -466,6 +553,7 @@ if __name__ == "__main__":
 
     reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=model_choice)
     publish_meta()
+    stopped = False
 
     # compile_mode = "reduce-overhead"
     # try:
@@ -476,12 +564,20 @@ if __name__ == "__main__":
     #     print("[compile] disabled:", e)
 
     while not rospy.is_shutdown():
+
         # making sure that while waiting the actions are zero
         # sim.send_control(torch.tensor([0.0, 0.0]))
         # input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
 
         state = sim.get_current_state(dynamics._device)
-        obj.current_state = state  # update the current state in the objective, which updates the goal
+
+        if CONFIG["disturbance"] == 1:
+            state_est = dist.disturb(state)  # <-- feed this to MPPI
+        else:
+            state_est = state
+
+
+        obj.current_state = state_est  # update the current state in the objective, which updates the goal
         obj.counter = 0
 
         if state is None:
@@ -492,22 +588,37 @@ if __name__ == "__main__":
         start_time = time.time()
         with torch.inference_mode(): # don't need to keep track of the gradients
             # 5) Compute MPPI action
-            action = planner.command(state)
+            action = planner.command(state_est)
 
-        # 6) Send to vehicle
-        sim.send_control(action[0])
+        elapsed_time = time.time() - start_time
+        if elapsed_time > CONFIG["dt"]:
 
+            print(f"MPPI computation time: {elapsed_time:.4f} seconds")
+
+        if elapsed_time > 0.2:
+            print("sending 0 as input due to high computation time (0.2 seconds)")
+            sim.send_control(torch.tensor([0.0, 0.0]))
+
+        else:
+            # 6) Send to vehicle
+            sim.send_control(action[0])
 
         # # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
         # rollouts = planner.states.detach()
         # # publish them
         # sim.publish_rollouts(rollouts)
 
+
+        # print(f"Elapsed MPPI computation time: {elapsed_time}")
+        comptime_publisher.publish(elapsed_time)
+
         action_msg = Float32MultiArray()
         action_msg.data = action.reshape(-1).tolist() # list(action.to(torch.float32))
         action_publisher.publish(action_msg)
-
-        # publish entire control input (NOW DONE IN LOGGER NODE)
+        # publish entire control input
+        # T = CONFIG["mppi"]["horizon"]
+        # NU = 2
+        # disp_action = np.array(action_msg.data, dtype=np.float32).reshape(T, NU)
         # sim.publish_path(action.detach())
 
         # this is just to republish global path message every now and then
@@ -518,12 +629,7 @@ if __name__ == "__main__":
         # update counter
         counter = counter + 1
 
-        elapsed_time = time.time() - start_time
-        # print(f"Elapsed MPPI computation time: {elapsed_time}")
-        comptime_publisher.publish(elapsed_time)
-        if elapsed_time > 0.05:
 
-            print(f"MPPI computation time: {elapsed_time:.4f} seconds")
         rate.sleep()
 
 

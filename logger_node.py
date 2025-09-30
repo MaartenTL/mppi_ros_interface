@@ -12,7 +12,10 @@ import numpy as np
 from dynamics import Kinematic_Bicycle, Dynamic_Bicycle
 from simulator_ros import SimulatorROS
 from run_mppi_ros import ROSObjective
+import yaml
 import torch
+
+abs_path = os.path.dirname(os.path.abspath(__file__))
 
 def quat_to_yaw(qx, qy, qz, qw):
     # yaw from quaternion
@@ -21,13 +24,13 @@ def quat_to_yaw(qx, qy, qz, qw):
     return math.atan2(siny_cosp, cosy_cosp)
 
 class DARTLogger:
-    def __init__(self):
+    def __init__(self, laps):
         self.seen = {"pose": False, "throttle": False, "steering": False, "comp": False}
         self.ready = False
 
         car = rospy.get_param("~car_number", 1)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/dart_log_car{car}_{timestamp}.csv")
+        out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1dart_log_car{car}_{timestamp}.csv")
         rate_hz = rospy.get_param("~rate", 20) # equal to timestep from simulator
 
         self.lock = Lock()
@@ -89,7 +92,7 @@ class DARTLogger:
         #     "mppi_roll": None
         # })
 
-        self.max_laps = rospy.get_param("~laps_to_log", 3)
+        self.max_laps = laps
         self.logging_enabled = True
         rospy.Subscriber("lap_count", Int32, self.cb_lap_count, queue_size=1)
 
@@ -274,6 +277,7 @@ class DARTLogger:
 if __name__ == "__main__":
     rospy.init_node("dart_logger_node")
 
-
-    DARTLogger()
+    CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
+    laps = CONFIG["laps"]
+    DARTLogger(laps)
     rospy.spin()
