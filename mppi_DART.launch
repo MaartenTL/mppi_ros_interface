@@ -1,0 +1,18 @@
+<launch>
+    <!-- MPPI ROS Node -->
+    <node pkg="mppi_ros_interface"
+          type="run_mppi_ros.py"
+          name="mppi_ros"
+          output="screen"
+          cwd="node"/>
+
+    <!-- Logger Node -->
+    <node pkg="mppi_ros_interface"
+          type="logger_node.py"
+          name="mppi_logger"
+          output="screen"
+          cwd="node"/>
+
+    <node pkg="mppi_ros_interface" type="safety_toggle.py" name="Safety_node"
+       />
+</launch>
