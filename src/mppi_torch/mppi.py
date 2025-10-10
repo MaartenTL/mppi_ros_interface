@@ -320,9 +320,6 @@ class MPPIPlanner(ABC):
 
             action = torch.clone(self.mean_action)
 
-
-
-
         # print(eta, self.lambda_)
         # Lambda update
         if self.update_lambda and self.mppi_mode == 'simple':
@@ -413,7 +410,8 @@ class MPPIPlanner(ABC):
         if self.terminal_state_cost:
             c = self.terminal_state_cost(states, actions)
             cost_samples += c
-        cost_total += cost_samples.mean(dim=0)
+
+        cost_total += cost_samples # .mean(dim=0) THIS IS A BIG ERROR!??? Only adds the mean of all the terminal cost to each total cost??
         
         if self.mppi_mode == 'halton-spline':
             self.noise = self._update_distribution(cost_horizon, actions)
