@@ -3,22 +3,22 @@ dt: 0.05 # 0.05
 steps: 1000
 sim_model: "SVGP"          # kinematic, dynamic, SVGP, SVGP_wet
 mppi_model: "dynamic"         # kinematic, dynamic
-v_target: 2.5                 # 2.5, 5.0
-laps: 1                     # number of laps to log
-disturbance: 1            # 1: disturbance on, 0: disturbance off
-track: "racetrack_vicon" # "racetrack_vicon_2" , "racetrack_vicon"
+v_target: 5.0                # 2.5, 5.0
+laps: 5                     # number of laps to log
+disturbance: 0            # 1: disturbance on, 0: disturbance off
+track: "racetrack_vicon_2" # "racetrack_vicon_2" , "racetrack_vicon"
 
 mppi: 
   device: "cpu" # cuda:0, cpu
   mppi_mode: "halton-spline"  # halton-spline, simple
   sampling_method: "halton"   # halton, random
-  num_samples: 50 # 4000 # 100
+  num_samples: 50 # 50 # 4000 # 100
   horizon: 12 # 20                 # At least 12 for Halton Sampling
   u_per_command: 20                # Make same as horizon so control over entire horizon gets outputted
   lambda_: 0.05 # 0.1
   u_min: [0.0, -1.0]
   u_max: [1.0, 1.0]
-  noise_sigma: [[0.8, 0.], [0., 3.0]] # [[1.5, 0.], [0., 3.0]]  # [[0.8, 0.], [0., 1.5]] # [[0.1, 0.], [0., 0.2]] [[0.5, 0.], [0., 0.5]]
+  noise_sigma: [[0.8, 0.], [0., 1.5]] # [[1.5, 0.], [0., 3.0]]  # [[0.8, 0.], [0., 1.5]] # [[0.1, 0.], [0., 0.2]] [[0.5, 0.], [0., 0.5]]
   update_cov: False
   rollout_var_discount: 0.9 # 0.95
   sample_null_action: True

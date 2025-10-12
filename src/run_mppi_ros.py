@@ -25,8 +25,8 @@ from visualization_msgs.msg import MarkerArray
 
 class StateDisturber:
     def __init__(self,
-                 sigma_pos=0.02,        # m
-                 sigma_yaw_deg=0.5,     # deg
+                 sigma_pos=0.1,        # m
+                 sigma_yaw_deg=0.05,     # deg
                  sigma_v=0.05,          # m/s for vx, vy
                  sigma_omega=0.02,      # rad/s
                  bias_yaw_deg=0.0,      # constant heading bias
@@ -89,7 +89,7 @@ class StateDisturber:
 class MPPIWeights:
     def __init__(self):
         self.q_lat = 0.5 # 1.0
-        self.q_lag = 0.5 # 1.0
+        self.q_lag = 1.5 # 1.0
         self.q_head = 0.25 # 1.0
         self.q_v = 0.1 # 0.0
         self.q_vy = 0.2 # 0.0
@@ -474,17 +474,7 @@ def kill_rosbag(name):
 
 if __name__ == "__main__":
 
-    dist = StateDisturber(
-        sigma_pos=0.00,  # 2 cm std
-        sigma_yaw_deg= 0.0,  # 0.4° std
-        sigma_v=0.0,  # 0.05 m/s std
-        sigma_omega=0.0,  # 0.02 rad/s std
-        bias_yaw_deg=0.0,  # set e.g. 0.8 for a fixed bias
-        latency_steps=0,  # try 1-2 to feel 1–2*dt delay
-        dropout_prob=0.0,
-        outlier_prob=0.0,
-        seed=123
-    )
+    dist = StateDisturber()
 
     meta_pub = rospy.Publisher("mppi_meta", String, queue_size=1, latch=True)
     rospy.init_node("mppi_ros_node")
@@ -493,7 +483,7 @@ if __name__ == "__main__":
     comptime_publisher = rospy.Publisher('comptime_' + str(car_number), Float32, queue_size=1)
     action_publisher = rospy.Publisher('mppi_action', Float32MultiArray, queue_size=1)
 
-    # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
+    mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
 
     # 1) Load your existing YAML config
@@ -572,7 +562,7 @@ if __name__ == "__main__":
         state = sim.get_current_state(dynamics._device)
 
         if CONFIG["disturbance"] == 1:
-            state_est = dist.disturb(state)  # <-- feed this to MPPI
+            state_est = dist.disturb(state)
         else:
             state_est = state
 
@@ -603,10 +593,10 @@ if __name__ == "__main__":
             # 6) Send to vehicle
             sim.send_control(action[0])
 
-        # # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
-        # rollouts = planner.states.detach()
-        # # publish them
-        # sim.publish_rollouts(rollouts)
+        # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
+        rollouts = planner.states.detach()
+        # publish them
+        sim.publish_rollouts(rollouts)
 
 
         # print(f"Elapsed MPPI computation time: {elapsed_time}")

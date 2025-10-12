@@ -30,7 +30,7 @@ class DARTLogger:
 
         car = rospy.get_param("~car_number", 1)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1dart_log_car{car}_{timestamp}.csv")
+        out = rospy.get_param("~outfile", f"/home/maarten/log_Dart/1dart_log_car{car}_{timestamp}.csv")
         rate_hz = rospy.get_param("~rate", 20) # equal to timestep from simulator
 
         self.lock = Lock()
@@ -122,7 +122,6 @@ class DARTLogger:
                 total_expected_cost = sum(expected_cost)
                 self.data["expected_cost"] = total_expected_cost.item()
 
-
                 total_lat_cost = sum(weight.q_lat * lat_err ** 2)
                 total_lag_cost = sum(weight.q_lag * lag_err ** 2)
                 total_heading_cost = sum(weight.q_head * head_err ** 2)
@@ -200,8 +199,12 @@ class DARTLogger:
                 return
 
             if not self.ready:
-                if self.seen["pose"] and (self.seen["throttle"] or self.seen["steering"]) and self.seen["comp"]:
-                    self.ready = True
+                if self.lap == 1.0:
+                    if self.seen["pose"] and (self.seen["throttle"] or self.seen["steering"]) and self.seen["comp"]:
+                        self.ready = True
+                        print("ready")
+                    else:
+                        return
                 else:
                     return
 

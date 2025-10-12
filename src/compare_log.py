@@ -12,7 +12,7 @@ from path_track_definitions import generate_path_data
 mpl.rcParams.update({
     "axes.grid": True, "grid.linestyle": "--", "grid.alpha": 0.35
 })
-BASE_DIR = "/home/maarten/Documents/Thesis/log_Dart"
+BASE_DIR = "/home/maarten/log_Dart"
 
 def _add_direction_arrows(ax, xs, ys, num=3, color=None, frac_len=0.05, z=3):
     """Place `num` arrows along polyline (xs, ys).
@@ -289,8 +289,7 @@ def summarise_run(df, csv_path):
     else:
         beta_mean_abs = beta_p95 = beta_max = np.nan
 
-    print(sum(df["lap_time"]))
-    mean_lap_time = sum(df["lap_time"]) / (df["max_laps"][0] - 1)  # Divide by number of laps done
+    mean_lap_time = sum(df["lap_time"]) / (df["max_laps"][0])  # Divide by number of laps done
 
     return {
         "file": csv_path, "mppi_model": df["mppi_model"][0], "sim_model": df["sim_model"][0],
@@ -438,9 +437,10 @@ def main():
     for csv_path_i in args.csv:
         print(csv_path_i)
         if csv_path_i.lower().endswith(".csv"):
-            return
+            pass
         else:
             csv_path_i += ".csv"
+
 
         csv_path = csv_path_i if os.path.isabs(csv_path_i) else os.path.join(BASE_DIR, csv_path_i)
         df = load_and_prepare(csv_path)
