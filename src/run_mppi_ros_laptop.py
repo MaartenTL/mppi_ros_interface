@@ -10,7 +10,7 @@ from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
 from functions_for_controllers import find_s_of_closest_point_on_global_path, produce_track,produce_marker_array_rviz, produce_marker_rviz, steer_angle_2_command
 import numpy as np
-from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, SVGP
+from dynamics import Kinematic_Bicycle, Dynamic_Bicycle
 from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
 from dynamic_reconfigure.client import Client
@@ -25,8 +25,8 @@ from visualization_msgs.msg import MarkerArray
 
 class StateDisturber:
     def __init__(self,
-                 sigma_pos=0.1,        # m
-                 sigma_yaw_deg=0.05,     # deg
+                 sigma_pos=0.02,        # m
+                 sigma_yaw_deg=0.5,     # deg
                  sigma_v=0.05,          # m/s for vx, vy
                  sigma_omega=0.02,      # rad/s
                  bias_yaw_deg=0.0,      # constant heading bias
@@ -88,11 +88,11 @@ class StateDisturber:
 
 class MPPIWeights:
     def __init__(self):
-        self.q_lat = 0.01 # 0.5 1.0
-        self.q_lag = 5.0 # 1.0 2.5
-        self.q_head = 1.0 # 0.25
+        self.q_lat = 0.5 # 1.0
+        self.q_lag = 2.5 # 1.0
+        self.q_head = 0.25 # 1.0
         self.q_v = 0.1 # 0.0
-        self.q_vy = 0.2 # 0.2
+        self.q_vy = 0.2 # 0.0
         self.q_omega = 0.0 # 0.0
 
         self.ter_q_lat = self.q_lat * 10.0 # 10.0
@@ -102,11 +102,10 @@ class MPPIWeights:
         self.ter_q_vy = self.q_vy * 10.0
         self.ter_q_omega = self.q_omega * 10.0 #0.5
 
-        self.q_u_throttle = 0.0 # 0.01
-        self.q_u_steering = 0.0 # 0.1
-        self.q_du_steer = 0.1
+        self.q_u_throttle = 0.01
+        self.q_u_steering = 0.01
 
-        self.w_lane =  200.0 # 100.0  # weight for lane penalty
+        self.w_lane =  100.0  # 100.0  # weight for lane penalty
 
 
 class ROSObjective:
@@ -159,8 +158,7 @@ class ROSObjective:
         self.ref_yaw_sin = 0.0
 
         self.lane_width = 1.0 # 0.60  # m; you can overwrite via ROS param or GUI later
-        self.lane_margin = 0.1
-        # m; inner safety buffer
+        self.lane_margin = 0.05  # m; inner safety buffer
 
         self.left_lane_pub = rospy.Publisher('left_lane', MarkerArray, queue_size=1)
         self.right_lane_pub = rospy.Publisher('right_lane', MarkerArray, queue_size=1)
@@ -168,6 +166,39 @@ class ROSObjective:
     def _softplus_hinge(self, x: torch.Tensor, sharp=25.0):
         # ≈ max(0, x) but smooth; larger 'sharp' -> steeper wall
         return torch.log1p(torch.exp(sharp * x)) / sharp
+
+    def terminal_costs(self, states: torch.Tensor, actions: torch.Tensor):
+
+        x, y, yaw, vx, vy, omega = states[:, -1, 0], states[:, -1, 1], states[:, -1, 2], states[:, -1, 3], states[:, -1, 4], states[:, -1, 5]
+        ref_x = self.X0[-1,0]
+        ref_y = self.X0[-1,1]
+        ref_yaw = self.X0[-1,2]
+        V_target = self.X0[-1,3]
+
+        dx = x - ref_x
+        dy = y - ref_y
+
+        lag_err = dx * self.ref_yaw_cos[-1] + dy * self.ref_yaw_sin[-1]
+        lat_err = -dx * self.ref_yaw_sin[-1] + dy * self.ref_yaw_cos[-1]
+        head_err = self.wrap_angle(yaw - ref_yaw)
+        speed = torch.sqrt(vx ** 2 + vy ** 2)
+        speed_err = speed - V_target
+
+        terminal_cost = (self.weight.ter_q_lat * lat_err ** 2
+                + self.weight.ter_q_lag * lag_err ** 2
+                + self.weight.ter_q_head * head_err ** 2
+                + self.weight.ter_q_v * speed_err ** 2
+                + self.weight.ter_q_vy * vy ** 2
+                + self.weight.ter_q_omega * omega ** 2)
+
+        # ADD CONTROL INPUT COSTS
+
+        half_w = self.lane_width * 0.5
+        excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
+        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T,), 0, 300)
+
+        terminal_cost = terminal_cost + c_lane_T
+        return terminal_cost
 
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
         # wrap into [-π, π]
@@ -234,47 +265,6 @@ class ROSObjective:
                 + self.weight.q_omega * torch.Tensor(omega) ** 2)
 
         return expected_cost, self.weight, lat_err, lag_err, head_err, speed_err, torch.Tensor(vy), torch.Tensor(omega)
-
-    def terminal_costs(self, states: torch.Tensor, actions: torch.Tensor):
-
-        x, y, yaw, vx, vy, omega = states[:, -1, 0], states[:, -1, 1], states[:, -1, 2], states[:, -1, 3], states[:, -1, 4], states[:, -1, 5]
-        ref_x = self.X0[-1,0]
-        ref_y = self.X0[-1,1]
-        ref_yaw = self.X0[-1,2]
-        V_target = self.X0[-1,3]
-
-        dx = x - ref_x
-        dy = y - ref_y
-
-        lag_err = dx * self.ref_yaw_cos[-1] + dy * self.ref_yaw_sin[-1]
-        lat_err = -dx * self.ref_yaw_sin[-1] + dy * self.ref_yaw_cos[-1]
-        head_err = self.wrap_angle(yaw - ref_yaw)
-        speed = torch.sqrt(vx ** 2 + vy ** 2)
-        speed_err = speed - V_target
-
-        terminal_cost = (self.weight.ter_q_lat * lat_err ** 2
-                + self.weight.ter_q_lag * lag_err ** 2
-                + self.weight.ter_q_head * head_err ** 2
-                + self.weight.ter_q_v * speed_err ** 2
-                + self.weight.ter_q_vy * vy ** 2
-                + self.weight.ter_q_omega * omega ** 2)
-
-        steer_seq = actions[:, :, 1]  # [K, T]
-        dsteer = (steer_seq[:, 1:] - steer_seq[:, :-1]) / self.dt  # [K, T-1], rate [rad/s]
-        rate_cost = self.weight.q_du_steer * torch.sum(dsteer ** 2, dim=1)  # [K]
-
-        control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0],1) + self.weight.q_u_steering * torch.sum(actions[:,:,1],1) # + rate_cost
-
-        terminal_cost += control_cost
-
-        half_w = self.lane_width * 0.5
-        excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
-        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 10e+20)
-
-        terminal_cost = terminal_cost + c_lane_T
-
-        terminal_cost = control_cost + c_lane_T
-        return terminal_cost
 
     def compute_running_cost(self, state: torch.Tensor):
         """
@@ -485,7 +475,17 @@ def kill_rosbag(name):
 
 if __name__ == "__main__":
 
-    dist = StateDisturber()
+    dist = StateDisturber(
+        sigma_pos=0.00,  # 2 cm std
+        sigma_yaw_deg= 0.0,  # 0.4° std
+        sigma_v=0.0,  # 0.05 m/s std
+        sigma_omega=0.0,  # 0.02 rad/s std
+        bias_yaw_deg=0.0,  # set e.g. 0.8 for a fixed bias
+        latency_steps=0,  # try 1-2 to feel 1–2*dt delay
+        dropout_prob=0.0,
+        outlier_prob=0.0,
+        seed=123
+    )
 
     meta_pub = rospy.Publisher("mppi_meta", String, queue_size=1, latch=True)
     rospy.init_node("mppi_ros_node")
@@ -494,7 +494,7 @@ if __name__ == "__main__":
     comptime_publisher = rospy.Publisher('comptime_' + str(car_number), Float32, queue_size=1)
     action_publisher = rospy.Publisher('mppi_action', Float32MultiArray, queue_size=1)
 
-    mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
+    # mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
 
     # 1) Load your existing YAML config
@@ -517,8 +517,6 @@ if __name__ == "__main__":
         dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
     elif CONFIG["mppi_model"] == "dynamic":
         dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
-    elif CONFIG["mppi_model"] == "SVGP":
-        dynamics = SVGP(dt=CONFIG["dt"], device=CONFIG["device"])
 
     track_choice = CONFIG["track"]
 
@@ -546,7 +544,7 @@ if __name__ == "__main__":
 
     planner.terminal_state_cost = obj.terminal_costs
 
-    rate = rospy.Rate(1/CONFIG["dt"])
+    rate = rospy.Rate(1/CONFIG["dt"])  #
 
     counter = 0
     global_path_message_rate = 5  # publish 1 every 5 control loops
@@ -575,7 +573,7 @@ if __name__ == "__main__":
         state = sim.get_current_state(dynamics._device)
 
         if CONFIG["disturbance"] == 1:
-            state_est = dist.disturb(state)
+            state_est = dist.disturb(state)  # <-- feed this to MPPI
         else:
             state_est = state
 
@@ -606,11 +604,10 @@ if __name__ == "__main__":
             # 6) Send to vehicle
             sim.send_control(action[0])
 
-        if CONFIG["viz_rollouts"] == 1:
-            # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
-            rollouts = planner.states.detach()
-            # publish them
-            sim.publish_rollouts(rollouts)
+        # # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
+        # rollouts = planner.states.detach()
+        # # publish them
+        # sim.publish_rollouts(rollouts)
 
 
         # print(f"Elapsed MPPI computation time: {elapsed_time}")
@@ -619,12 +616,11 @@ if __name__ == "__main__":
         action_msg = Float32MultiArray()
         action_msg.data = action.reshape(-1).tolist() # list(action.to(torch.float32))
         action_publisher.publish(action_msg)
-
         # publish entire control input
-        T = CONFIG["mppi"]["horizon"]
-        NU = 2
-        disp_action = np.array(action_msg.data, dtype=np.float32).reshape(T, NU)
-        sim.publish_path(action.detach())
+        # T = CONFIG["mppi"]["horizon"]
+        # NU = 2
+        # disp_action = np.array(action_msg.data, dtype=np.float32).reshape(T, NU)
+        # sim.publish_path(action.detach())
 
         # this is just to republish global path message every now and then
         if counter > global_path_message_rate:
@@ -633,6 +629,7 @@ if __name__ == "__main__":
 
         # update counter
         counter = counter + 1
+
 
         rate.sleep()
 

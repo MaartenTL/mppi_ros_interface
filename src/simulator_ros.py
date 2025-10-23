@@ -11,6 +11,7 @@ import numpy as np
 from visualization_msgs.msg import MarkerArray, Marker
 import tf
 import time
+from collections import deque
 
 class SimulatorROS:
     def __init__(self, car_number):
@@ -67,6 +68,23 @@ class SimulatorROS:
         self.dynamics = None
         self.vizdynamics = None
 
+
+
+        self.buffer_len = rospy.get_param("~buffer_len", 5)            # finite-difference window
+        self.delay_compensation = rospy.get_param("~delay_comp", False)
+        self.delay = rospy.get_param("~delay_sec", 0.05)               # seconds
+
+        # --- ring buffers (oldest -> newest) ---
+        self.past_x_vicon   = np.zeros(5)
+        self.past_y_vicon   = np.zeros(5)
+        self.past_yaw_vicon = np.zeros(5)
+        self.past_time_vicon= np.zeros(5)
+
+
+        self.vx_publisher = rospy.Publisher("vx_1", Float32, queue_size=1)
+        self.vy_publisher = rospy.Publisher("vy_1", Float32, queue_size=1)
+        self.w_publisher  = rospy.Publisher("omega_1",   Float32, queue_size=1)
+
     def _pose_cb(self, msg):
         with self._lock:
             self._latest_msg = msg
@@ -79,6 +97,60 @@ class SimulatorROS:
 
     def _omega_cb(self, msg):
         self._omega = msg.data
+
+    def vicon_pos_2_vel(self, x, y, yaw, time, stamp):
+
+
+
+        # update past states
+        # shift them back by 1 step and update the last value
+        self.past_x_vicon[:-1] = self.past_x_vicon[1:]
+        self.past_y_vicon[:-1] = self.past_y_vicon[1:]
+        self.past_yaw_vicon[:-1] = self.past_yaw_vicon[1:]
+        self.past_time_vicon[:-1] = self.past_time_vicon[1:]
+
+        # add last entry
+        self.past_x_vicon[-1] = x
+        self.past_y_vicon[-1] = y
+        self.past_yaw_vicon[-1] = yaw
+        self.past_time_vicon[-1] = time
+
+        # evalaute velocities using finite differences on last values
+
+        vx_abs = (self.past_x_vicon[-1] - self.past_x_vicon[0]) / (self.past_time_vicon[-1] - self.past_time_vicon[0])
+        vy_abs = (self.past_y_vicon[-1] - self.past_y_vicon[0]) / (self.past_time_vicon[-1] - self.past_time_vicon[0])
+
+        # convert to body frame
+        vx = +vx_abs * np.cos(yaw) + vy_abs * np.sin(yaw)
+        vy = -vx_abs * np.sin(yaw) + vy_abs * np.cos(yaw)
+
+        # unwrap past angles to avoid jumps when flipping from - pi to + pi
+        delta_yaw = self.past_yaw_vicon[-1] - self.past_yaw_vicon[0]
+        if delta_yaw > np.pi:
+            delta_yaw -= 2 * np.pi
+        elif delta_yaw < -np.pi:
+            delta_yaw += 2 * np.pi
+        omega = delta_yaw / (self.past_time_vicon[-1] - self.past_time_vicon[0])
+
+        # update the pose
+        # if delay compensation is used, forward propagate the current state into the future
+        if self.delay_compensation:
+            # print('delay=',self.delay)
+            # determine absolute velocities
+            x_y_yaw_state = [x + vx_abs * self.delay,
+                                  y + vy_abs * self.delay,
+                                  yaw + omega * self.delay]
+        else:
+            x_y_yaw_state = [x, y, yaw]
+
+        pose_msg_time = stamp
+
+        # publish velocity states for rviz
+        self.vx_publisher.publish(Float32(vx))
+        self.vy_publisher.publish(Float32(vy))
+        self.w_publisher.publish(Float32(omega))
+
+        return vx, vy, omega
 
 
     def get_current_state(self, device):
@@ -97,10 +169,7 @@ class SimulatorROS:
         q = msg.pose.pose.orientation
         yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
 
-        # Use latest velocities
-        vx = self._vx
-        vy = self._vy
-        omega = self._omega
+        vx, vy , omega = self.vicon_pos_2_vel(pos.x, pos.y, yaw, msg.header.stamp.to_sec(), msg.header.stamp)
 
         # Build a 1×6 tensor: [x, y, yaw, vx, vy, omega]
         state = torch.tensor([[pos.x, pos.y, yaw, vx, vy, omega]], dtype=torch.float32, device=device)

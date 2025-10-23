@@ -62,8 +62,8 @@ class DARTLogger:
         self.csvfile = open(self.outfile, "w", newline="")
         self.writer = csv.writer(self.csvfile)
         self.writer.writerow([
-            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target","max_laps", "lap_time",
-            "total expected cost",
+            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps",
+            "weights", "lap_time", "total expected cost",
             "t", "x", "y", "yaw", "vx", "vy", "omega", "throttle", "steering", "speed", "beta",
             "comp_time", "lat cost", "lag cost", "heading cost", "speed cost", "vy cost", "omega cost",
             # # selected rollout prediction:
@@ -78,11 +78,6 @@ class DARTLogger:
             # "roll_vy_mean", "roll_vy_p10", "roll_vy_p50", "roll_vy_p90",
             # "roll_w_mean", "roll_w_p10", "roll_w_p50", "roll_w_p90"
         ])
-
-        self.csvfile.flush()
-
-        self.timer = rospy.Timer(rospy.Duration(1.0/float(rate_hz)), self.flush_row)
-        rospy.loginfo(f"[logger_node] Writing to {self.outfile} @ {rate_hz} Hz")
 
         # rospy.Subscriber("mppi_debug/selected", Float32MultiArray, self.cb_mppi_selected, queue_size=100)
         # rospy.Subscriber("mppi_debug/rollouts", Float32MultiArray, self.cb_mppi_rollouts, queue_size=100)
@@ -106,6 +101,12 @@ class DARTLogger:
         self.sim = SimulatorROS(car)
         self.lap = 0.0
         self.total_expected_cost = 0.0
+
+
+        self.csvfile.flush()
+
+        self.timer = rospy.Timer(rospy.Duration(1.0/float(rate_hz)), self.flush_row)
+        rospy.loginfo(f"[logger_node] Writing to {self.outfile} @ {rate_hz} Hz")
 
 
 
@@ -140,7 +141,7 @@ class DARTLogger:
     def cb_lap_time(self, msg):
         with self.lock:
             self.data["lap_time"] = msg.data
-            rospy.loginfo(f"[logger_node] Lap time: {msg.data}")
+            # rospy.loginfo(f"[logger_node] Lap time: {msg.data}")
             self.new_lap_time = True
 
 
@@ -228,16 +229,17 @@ class DARTLogger:
                 self.obj = ROSObjective(self.meta["track_choice"],self.meta["mppi"]["horizon"], self.meta["dt"], self.meta["V_target"], "cpu")
 
                 meta_vals = [
-
                     self.meta["mppi"],
                     self.meta["mppi_model"], sim_model,
                     self.meta["track_choice"], self.meta["dt"],
                     self.meta["V_target"],self.max_laps,
                 ]
+                weights = self.obj.weight.__dict__
                 self.meta_written_once = True
             else:
                 # write blanks after the first time
                 meta_vals = ["", "", "", "", "", "",""]
+                weights = None
 
             if self.new_lap_time:
                 self.new_lap_time = False
@@ -245,7 +247,7 @@ class DARTLogger:
                 self.data["lap_time"] = 0.0
 
             row = [
-                *meta_vals, self.data["lap_time"],self.data["expected_cost"],
+                *meta_vals, weights, self.data["lap_time"],self.data["expected_cost"],
                 self.data["t"], self.data["x"], self.data["y"], self.data["yaw"],
                 self.data["vx"], self.data["vy"], self.data["omega"],
                 self.data["throttle"], self.data["steering"],math.hypot(self.data["vx"], self.data["vy"]),
