@@ -88,9 +88,9 @@ class StateDisturber:
 
 class MPPIWeights:
     def __init__(self):
-        self.q_lat = 0.01 # 0.5 1.0
-        self.q_lag = 5.0 # 1.0 2.5
-        self.q_head = 1.0 # 0.25
+        self.q_lat = 0.5 # 0.5 1.0
+        self.q_lag = 2.5 # 1.0 2.5
+        self.q_head = 0.25 # 0.25
         self.q_v = 0.1 # 0.0
         self.q_vy = 0.2 # 0.2
         self.q_omega = 0.0 # 0.0
@@ -106,7 +106,7 @@ class MPPIWeights:
         self.q_u_steering = 0.0 # 0.1
         self.q_du_steer = 0.1
 
-        self.w_lane =  200.0 # 100.0  # weight for lane penalty
+        self.w_lane =  100.0 # 100.0  # weight for lane penalty
 
 
 class ROSObjective:
@@ -159,7 +159,7 @@ class ROSObjective:
         self.ref_yaw_sin = 0.0
 
         self.lane_width = 1.0 # 0.60  # m; you can overwrite via ROS param or GUI later
-        self.lane_margin = 0.1
+        self.lane_margin = 0.05
         # m; inner safety buffer
 
         self.left_lane_pub = rospy.Publisher('left_lane', MarkerArray, queue_size=1)
@@ -265,15 +265,13 @@ class ROSObjective:
 
         control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0],1) + self.weight.q_u_steering * torch.sum(actions[:,:,1],1) # + rate_cost
 
-        terminal_cost += control_cost
-
         half_w = self.lane_width * 0.5
         excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
-        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 10e+20)
+        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 300)
 
         terminal_cost = terminal_cost + c_lane_T
 
-        terminal_cost = control_cost + c_lane_T
+        # terminal_cost = control_cost + c_lane_T
         return terminal_cost
 
     def compute_running_cost(self, state: torch.Tensor):
