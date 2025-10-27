@@ -90,7 +90,7 @@ class MPPIWeights:
     def __init__(self):
         self.q_lat = 0.5 # 0.5 1.0
         self.q_lag = 2.5 # 1.0 2.5
-        self.q_head = 0.25 # 0.25
+        self.q_head = 0.25 # 0.25 # 0.25
         self.q_v = 0.1 # 0.0
         self.q_vy = 0.2 # 0.2
         self.q_omega = 0.0 # 0.0
@@ -104,13 +104,15 @@ class MPPIWeights:
 
         self.q_u_throttle = 0.0 # 0.01
         self.q_u_steering = 0.0 # 0.1
-        self.q_du_steer = 0.1
+        self.q_du_steer = 1.0 
 
         self.w_lane =  100.0 # 100.0  # weight for lane penalty
 
+        self.w_opponent = 300.0 # weight for opponent
+
 
 class ROSObjective:
-    def __init__(self, track_choice, N, dt, V_target, config, device="cpu"):
+    def __init__(self, track_choice, N, dt, V_target, use_obstacle, device="cpu"):
 
         self.s_vals_global_path,\
         self.x_vals_global_path,\
@@ -164,6 +166,14 @@ class ROSObjective:
 
         self.left_lane_pub = rospy.Publisher('left_lane', MarkerArray, queue_size=1)
         self.right_lane_pub = rospy.Publisher('right_lane', MarkerArray, queue_size=1)
+
+        self.obstacle_c = None
+        self.obstacle_Q = torch.tensor([[0, 0],
+                          [0, 0]],
+                         device=device, dtype=torch.float32)
+        self.obstacle_margin = 0.05
+
+        self.use_obstacle = use_obstacle
 
     def _softplus_hinge(self, x: torch.Tensor, sharp=25.0):
         # ≈ max(0, x) but smooth; larger 'sharp' -> steeper wall
@@ -269,9 +279,13 @@ class ROSObjective:
         excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
         c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 300)
 
-        terminal_cost = terminal_cost + c_lane_T
+        terminal_cost = control_cost + c_lane_T # + terminal_cost
 
-        # terminal_cost = control_cost + c_lane_T
+        if self.use_obstacle:
+            c_opponent_T = self._obstacle_cost(x, y)
+
+            terminal_cost += c_opponent_T
+
         return terminal_cost
 
     def compute_running_cost(self, state: torch.Tensor):
@@ -304,9 +318,36 @@ class ROSObjective:
         excess = torch.abs(lat_err) - (half_w - self.lane_margin)
 
         c_lane = torch.clamp(self.weight.w_lane * self._softplus_hinge(excess), 0, 300)
+
+
+
         cost = cost + c_lane
 
+        if self.use_obstacle:
+            c_opponent = self._obstacle_cost(x, y)
+
+            cost += c_opponent
+
         return cost
+
+    def _obstacle_cost(self, xk: torch.Tensor, yk: torch.Tensor) -> torch.Tensor:
+        """
+        xk, yk: shape [K], positions of all rollouts at current time step.
+        returns: cost per rollout [K]
+        """
+        p = torch.stack([xk, yk], dim=1)  # [K,2]
+        total = torch.zeros_like(xk)
+
+        d = p - self.obstacle_c  # [K,2]
+        # phi = (p - c)^T Q (p - c) - 1
+        phi = torch.sum((d @ self.obstacle_Q) * d, dim=1) - 1.0  # [K]
+
+        # Penalise inside and near-outside: argument > 0 triggers penalty
+        arg = (-phi) + self.obstacle_margin  # inside => large positive
+        c_obs = self.weight.w_opponent * self._softplus_hinge(arg)  # smooth "solid" wall
+        total = total + torch.clamp(c_obs, 0.0, 1e6)
+
+        return total
 
 
     def get_current_goal(self):
@@ -445,6 +486,8 @@ class ROSObjective:
 
         return X0
 
+
+
 def reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=1, *,
               actuator_dynamics=False, disturbance=False):
     # Set pose + options and raise the reset flag
@@ -530,9 +573,9 @@ if __name__ == "__main__":
 
 
     # 3) Objective
-    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG, device=CONFIG["device"])
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG["use_obstacle"], device=CONFIG["device"])
 
-    global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path)
+    global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path, obj.s_vals_global_path)
 
     # 4) Planner
     planner = MPPIPlanner(
@@ -542,7 +585,7 @@ if __name__ == "__main__":
         running_cost=obj.compute_running_cost,
     )
 
-    planner.terminal_state_cost = obj.terminal_costs
+    # planner.terminal_state_cost = obj.terminal_costs
 
     rate = rospy.Rate(1/CONFIG["dt"])
 
@@ -580,6 +623,7 @@ if __name__ == "__main__":
 
         obj.current_state = state_est  # update the current state in the objective, which updates the goal
         obj.counter = 0
+        obj.obstacle_Q, obj.obstacle_c = sim.get_obstacle()
 
         if state is None:
             rospy.loginfo("Waiting for first /vicon/jetracer1 message…")

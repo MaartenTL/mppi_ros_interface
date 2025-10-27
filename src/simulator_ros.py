@@ -81,9 +81,59 @@ class SimulatorROS:
         self.past_time_vicon= np.zeros(5)
 
 
-        self.vx_publisher = rospy.Publisher("vx_1", Float32, queue_size=1)
-        self.vy_publisher = rospy.Publisher("vy_1", Float32, queue_size=1)
-        self.w_publisher  = rospy.Publisher("omega_1",   Float32, queue_size=1)
+        self.vx_publisher = rospy.Publisher("vx_est", Float32, queue_size=1)
+        self.vy_publisher = rospy.Publisher("vy_est", Float32, queue_size=1)
+        self.w_publisher  = rospy.Publisher("omega_est",   Float32, queue_size=1)
+
+        self.vx_error = 0.0
+        self.vy_error = 0.0
+        self.omega_error = 0.0
+
+        # extra publishers for direct comparison
+        self.vx_publisher_fd = rospy.Publisher("vx_est_fd", Float32, queue_size=1)
+        self.vy_publisher_fd = rospy.Publisher("vy_est_fd", Float32, queue_size=1)
+        self.w_publisher_fd = rospy.Publisher("omega_est_fd", Float32, queue_size=1)
+
+        self.vx_publisher_ls = rospy.Publisher("vx_est_ls", Float32, queue_size=1)
+        self.vy_publisher_ls = rospy.Publisher("vy_est_ls", Float32, queue_size=1)
+        self.w_publisher_ls = rospy.Publisher("omega_est_ls", Float32, queue_size=1)
+
+        # --- α–β filter params (tuneable) ---
+        self.ab_alpha = rospy.get_param("~ab_alpha", 0.2)  # position gain
+        self.ab_beta = rospy.get_param("~ab_beta", 0.4)  # velocity gain (≈ 2*alpha is a good start)
+
+        # filter state (world frame)
+        self._ab_x = None
+        self._ab_y = None
+        self._ab_yaw_unwrapped = None
+        self._ab_vx = 0.0
+        self._ab_vy = 0.0
+        self._ab_omega = 0.0
+        self._ab_t_last = None
+
+        # publishers for α–β
+        self.vx_publisher_ab = rospy.Publisher("vx_est_ab", Float32, queue_size=1)
+        self.vy_publisher_ab = rospy.Publisher("vy_est_ab", Float32, queue_size=1)
+        self.w_publisher_ab = rospy.Publisher("omega_est_ab", Float32, queue_size=1)
+
+        self.obs_pub = rospy.Publisher('obstacles', MarkerArray, queue_size=1, latch=True)
+
+        # Example: one obstacle placed at a path position (s0) with lateral offset d0 (m)
+        # You can also set absolute (cx, cy) below if you prefer.
+        self.obst_s0 = 8.0  # metres along global path
+        self.obst_d0 = -0.2  # lateral offset from centreline (+left, -right)
+        self.obst_a, self.obst_b = 0.5, 0.25  # ellipse semi-axes (m): x'-axis=a, y'-axis=b
+        self.obst_yaw = 0.0  # orientation of ellipse in world (rad)
+
+        self.obst_margin = 0.05  # safety buffer added to "solid" interior
+
+        self.obst_cy = 0.0
+        self.obst_cx = 0.0
+
+        self.x_vals_global_path = None
+        self.y_vals_global_path = None
+        self.s_vals_global_path = None
+
 
     def _pose_cb(self, msg):
         with self._lock:
@@ -98,60 +148,143 @@ class SimulatorROS:
     def _omega_cb(self, msg):
         self._omega = msg.data
 
+    def _ab_update(self, x_meas, y_meas, yaw_meas, t_now):
+        """
+        α–β filter on x(t), y(t), yaw(t) in WORLD frame.
+        Returns body-frame (vx, vy) and omega at time t_now.
+        """
+        alpha, beta = self.ab_alpha, self.ab_beta
+
+        # unwrap yaw measurement consistently
+        if self._ab_yaw_unwrapped is None:
+            yaw_unw = yaw_meas
+        else:
+            # incremental unwrap against last unwrapped
+            dy = yaw_meas - (self._ab_yaw_unwrapped % (2 * np.pi))
+            if dy > np.pi:  dy -= 2 * np.pi
+            if dy < -np.pi:  dy += 2 * np.pi
+            yaw_unw = self._ab_yaw_unwrapped + dy
+
+        # init on first call
+        if self._ab_x is None or self._ab_t_last is None:
+            self._ab_x, self._ab_y = float(x_meas), float(y_meas)
+            self._ab_yaw_unwrapped = float(yaw_unw)
+            self._ab_vx = 0.0;
+            self._ab_vy = 0.0;
+            self._ab_omega = 0.0
+            self._ab_t_last = float(t_now)
+            # return zeros (no estimate yet)
+            return 0.0, 0.0, 0.0
+
+        dt = float(t_now - self._ab_t_last)
+        if dt <= 1e-6 or dt > 0.5:  # guard weird stamps; reset if too large a gap
+            self._ab_t_last = float(t_now)
+            return self._ab_vx, self._ab_vy, self._ab_omega
+
+        # ---- Predict
+        x_pred = self._ab_x + self._ab_vx * dt
+        y_pred = self._ab_y + self._ab_vy * dt
+        yaw_pred = self._ab_yaw_unwrapped + self._ab_omega * dt
+
+        # Residuals
+        rx = float(x_meas) - x_pred
+        ry = float(y_meas) - y_pred
+        ryaw = float(yaw_unw) - yaw_pred
+
+        # ---- Correct
+        self._ab_x = x_pred + alpha * rx
+        self._ab_y = y_pred + alpha * ry
+        self._ab_yaw_unwrapped = yaw_pred + alpha * ryaw
+
+        self._ab_vx = self._ab_vx + (beta / dt) * rx
+        self._ab_vy = self._ab_vy + (beta / dt) * ry
+        self._ab_omega = self._ab_omega + (beta / dt) * ryaw
+
+        self._ab_t_last = float(t_now)
+
+        # rotate to BODY using the current measured yaw (fastest, consistent per tick)
+        c, s = np.cos(yaw_meas), np.sin(yaw_meas)
+        vx_body = c * self._ab_vx + s * self._ab_vy
+        vy_body = -s * self._ab_vx + c * self._ab_vy
+        return vx_body, vy_body, self._ab_omega
+
+    def ls_slope(self, val, tt):
+        v0 = val.mean()
+        vv = val - v0
+        denom = (tt * tt).sum()
+        # guard
+        if denom <= 1e-9:
+            return 0.0
+        return float((tt * vv).sum() / denom)
+
     def vicon_pos_2_vel(self, x, y, yaw, time, stamp):
-
-
-
-        # update past states
-        # shift them back by 1 step and update the last value
+        # shift ring buffers
         self.past_x_vicon[:-1] = self.past_x_vicon[1:]
         self.past_y_vicon[:-1] = self.past_y_vicon[1:]
         self.past_yaw_vicon[:-1] = self.past_yaw_vicon[1:]
         self.past_time_vicon[:-1] = self.past_time_vicon[1:]
 
-        # add last entry
+        # append newest
         self.past_x_vicon[-1] = x
         self.past_y_vicon[-1] = y
         self.past_yaw_vicon[-1] = yaw
         self.past_time_vicon[-1] = time
 
-        # evalaute velocities using finite differences on last values
-
-        vx_abs = (self.past_x_vicon[-1] - self.past_x_vicon[0]) / (self.past_time_vicon[-1] - self.past_time_vicon[0])
-        vy_abs = (self.past_y_vicon[-1] - self.past_y_vicon[0]) / (self.past_time_vicon[-1] - self.past_time_vicon[0])
-
-        # convert to body frame
-        vx = +vx_abs * np.cos(yaw) + vy_abs * np.sin(yaw)
-        vy = -vx_abs * np.sin(yaw) + vy_abs * np.cos(yaw)
-
-        # unwrap past angles to avoid jumps when flipping from - pi to + pi
-        delta_yaw = self.past_yaw_vicon[-1] - self.past_yaw_vicon[0]
-        if delta_yaw > np.pi:
-            delta_yaw -= 2 * np.pi
-        elif delta_yaw < -np.pi:
-            delta_yaw += 2 * np.pi
-        omega = delta_yaw / (self.past_time_vicon[-1] - self.past_time_vicon[0])
-
-        # update the pose
-        # if delay compensation is used, forward propagate the current state into the future
-        if self.delay_compensation:
-            # print('delay=',self.delay)
-            # determine absolute velocities
-            x_y_yaw_state = [x + vx_abs * self.delay,
-                                  y + vy_abs * self.delay,
-                                  yaw + omega * self.delay]
+        # ----- FD (end-point) -----
+        dt_fd = (self.past_time_vicon[-1] - self.past_time_vicon[0])
+        if dt_fd <= 1e-9:
+            vx_abs_fd, vy_abs_fd, omega_fd = 0.0, 0.0, 0.0
         else:
-            x_y_yaw_state = [x, y, yaw]
+            vx_abs_fd = (self.past_x_vicon[-1] - self.past_x_vicon[0]) / dt_fd
+            vy_abs_fd = (self.past_y_vicon[-1] - self.past_y_vicon[0]) / dt_fd
 
-        pose_msg_time = stamp
+            # unwrap only for FD omega across the window:
+            delta_yaw = self.past_yaw_vicon[-1] - self.past_yaw_vicon[0]
+            if delta_yaw > np.pi:
+                delta_yaw -= 2 * np.pi
+            elif delta_yaw < -np.pi:
+                delta_yaw += 2 * np.pi
+            omega_fd = delta_yaw / dt_fd
 
-        # publish velocity states for rviz
-        self.vx_publisher.publish(Float32(vx))
-        self.vy_publisher.publish(Float32(vy))
-        self.w_publisher.publish(Float32(omega))
+        # rotate FD using current yaw (your original behaviour)
+        vx_fd = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
+        vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
 
-        return vx, vy, omega
+        # ----- LS (Method A) -----
+        yaw_unwrapped = np.unwrap(self.past_yaw_vicon)
+        t0 = self.past_time_vicon.mean()
+        tt = self.past_time_vicon - t0
+        denom = float((tt * tt).sum())
 
+        if denom <= 1e-9:
+            vx_abs_ls, vy_abs_ls, omega_ls = 0.0, 0.0, 0.0
+        else:
+            def slope(arr):
+                return float(((arr - arr.mean()) * tt).sum() / denom)
+
+            vx_abs_ls = slope(self.past_x_vicon)
+            vy_abs_ls = slope(self.past_y_vicon)
+            omega_ls = slope(yaw_unwrapped)
+
+        # use mean yaw over window for LS rotation
+        yaw_avg = np.arctan2(np.sin(self.past_yaw_vicon).mean(),
+                             np.cos(self.past_yaw_vicon).mean())
+        c, s = np.cos(yaw_avg), np.sin(yaw_avg)
+        vx_ls = c * vx_abs_ls + s * vy_abs_ls
+        vy_ls = -s * vx_abs_ls + c * vy_abs_ls
+
+        # # publish for comparison
+        # self.vx_publisher_fd.publish(Float32(vx_fd))
+        # self.vy_publisher_fd.publish(Float32(vy_fd))
+        # self.w_publisher_fd.publish(Float32(omega_fd))
+        #
+        # self.vx_publisher_ls.publish(Float32(vx_ls))
+        # self.vy_publisher_ls.publish(Float32(vy_ls))
+        # self.w_publisher_ls.publish(Float32(omega_ls))
+
+        # keep your original outputs driving MPPI (choose which to return):
+        # return LS to actually test it in control loop, or FD to keep baseline stable.
+        return vx_fd, vy_fd, omega_fd
 
     def get_current_state(self, device):
         """
@@ -169,7 +302,23 @@ class SimulatorROS:
         q = msg.pose.pose.orientation
         yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
 
+        # vx = self._vx
+        # vy = self._vy
+        # omega = self._omega
+
         vx, vy , omega = self.vicon_pos_2_vel(pos.x, pos.y, yaw, msg.header.stamp.to_sec(), msg.header.stamp)
+
+        # if abs(self._vx - vx) > self.vx_error:
+        #     print(f"max vx error: {self._vx - vx}")
+        #     self.vx_error = abs(self._vx - vx)
+        #
+        # if abs(self._vy - vy) > self.vy_error:
+        #     print(f"vy error: {self._vy - vy}")
+        #     self.vy_error = abs(self._vy - vy)
+        #
+        # if abs(self._omega - omega) > self.omega_error:
+        #     print(f"omega error: {self._omega - omega}")
+        #     self.omega_error = abs(self._omega - omega)
 
         # Build a 1×6 tensor: [x, y, yaw, vx, vy, omega]
         state = torch.tensor([[pos.x, pos.y, yaw, vx, vy, omega]], dtype=torch.float32, device=device)
@@ -203,10 +352,15 @@ class SimulatorROS:
 
         #rospy.loginfo(f"throttle={throttle:.3f}, steering={steering:.3f}")
 
-    def generate_track(self, x_vals_global_path, y_vals_global_path):
+    def generate_track(self, x_vals_global_path, y_vals_global_path, s_vals_global_path):
         # produce and send out global path message to rviz, which contains information about the track (i.e. the global path)
         rgba = [219.0, 0.0, 204.0, 0.6]
         marker_type = 4
+
+        self.x_vals_global_path = x_vals_global_path
+        self.y_vals_global_path = y_vals_global_path
+        self.s_vals_global_path = s_vals_global_path
+
         global_path_message = produce_marker_array_rviz(x_vals_global_path, y_vals_global_path, rgba, marker_type)
 
         return global_path_message
@@ -265,7 +419,7 @@ class SimulatorROS:
         # 1) Setup MarkerArray
         ma = MarkerArray()
         now = rospy.Time.now()
-        clear = Marker();
+        clear = Marker()
         clear.action = Marker.DELETEALL
         ma.markers.append(clear)
 
@@ -308,6 +462,70 @@ class SimulatorROS:
 
         # 3) publish
         self.rviz_controls_pub.publish(ma)
+
+    def _lane_point_from_s_and_offset(self, s_query: float, d: float):
+        # Interpolate (x(s), y(s)) at s_query and shift laterally by d using path normal
+        s_max = self.s_vals_global_path[-1]
+        s_q = np.mod(s_query, s_max)
+        x = np.interp(s_q, self.s_vals_global_path, self.x_vals_global_path)
+        y = np.interp(s_q, self.s_vals_global_path, self.y_vals_global_path)
+
+        # approximate heading via gradients on the *global path arrays*
+        # (good enough for placing static stuff)
+        dx_ds = np.gradient(self.x_vals_global_path, self.s_vals_global_path)
+        dy_ds = np.gradient(self.y_vals_global_path, self.s_vals_global_path)
+        heading = np.arctan2(np.interp(s_q, self.s_vals_global_path, dy_ds),
+                             np.interp(s_q, self.s_vals_global_path, dx_ds))
+        nx, ny = -np.sin(heading), np.cos(heading)  # left normal
+        return x + d * nx, y + d * ny
+
+    def _publish_obstacles_rviz(self):
+        ma = MarkerArray()
+        m = Marker()
+        m.header.frame_id = "map"
+        m.type = Marker.CYLINDER  # flat cylinder as an ellipse footprint
+        m.id = 1
+        m.pose.position.x = float(self.obst_cx)
+        m.pose.position.y = float(self.obst_cy)
+        m.pose.position.z = 0.05
+
+        # yaw -> quaternion (z-rotation)
+        cy = np.cos(self.obst_yaw * 0.5)
+        sy = np.sin(self.obst_yaw * 0.5)
+        m.pose.orientation.x = 0.0
+        m.pose.orientation.y = 0.0
+        m.pose.orientation.z = sy
+        m.pose.orientation.w = cy
+
+        m.scale.x = 2.0 * self.obst_a # X diameter
+        m.scale.y = 2.0 * self.obst_b  # Y diameter
+        m.scale.z = 0.1  # thin "puck"
+
+        m.color.r, m.color.g, m.color.b, m.color.a = 0.9, 0.15, 0.15, 0.6
+        m.lifetime = rospy.Duration(0)  # persistent
+        ma.markers.append(m)
+        self.obs_pub.publish(ma)
+
+    def get_obstacle(self):
+
+        self.obst_cx, self.obst_cy = self._lane_point_from_s_and_offset(self.obst_s0, self.obst_d0)
+
+        self._publish_obstacles_rviz()
+
+        c = torch.tensor([self.obst_cx, self.obst_cy], dtype=torch.float32)
+        ca = float(self.obst_a)
+        cb = float(self.obst_b)
+        th = float(self.obst_yaw)
+
+        R = torch.tensor([[np.cos(th), -np.sin(th)],
+                          [np.sin(th), np.cos(th)]], dtype=torch.float32)
+        D = torch.tensor([[1.0 / (ca * ca), 0.0],
+                          [0.0, 1.0 / (cb * cb)]],
+                          dtype=torch.float32)
+        Q = R @ D @ R.T
+
+        return Q, c
+
 
 
 
