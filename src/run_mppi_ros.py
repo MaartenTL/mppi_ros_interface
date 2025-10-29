@@ -103,8 +103,8 @@ class MPPIWeights:
         self.ter_q_omega = self.q_omega * 10.0 #0.5
 
         self.q_u_throttle = 0.0 # 0.01
-        self.q_u_steering = 0.0 # 0.1
-        self.q_du_steer = 1.0 
+        self.q_u_steering = 0.5 #0.2 # 0.1
+        self.q_du_steer = 0.0
 
         self.w_lane =  100.0 # 100.0  # weight for lane penalty
 
@@ -273,13 +273,13 @@ class ROSObjective:
         dsteer = (steer_seq[:, 1:] - steer_seq[:, :-1]) / self.dt  # [K, T-1], rate [rad/s]
         rate_cost = self.weight.q_du_steer * torch.sum(dsteer ** 2, dim=1)  # [K]
 
-        control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0],1) + self.weight.q_u_steering * torch.sum(actions[:,:,1],1) # + rate_cost
+        control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0],1) + self.weight.q_u_steering * torch.sum(actions[:,:,1],1) + rate_cost
 
         half_w = self.lane_width * 0.5
         excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
         c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 300)
 
-        terminal_cost = control_cost + c_lane_T # + terminal_cost
+        terminal_cost = control_cost + c_lane_T + terminal_cost
 
         if self.use_obstacle:
             c_opponent_T = self._obstacle_cost(x, y)
@@ -318,15 +318,13 @@ class ROSObjective:
         excess = torch.abs(lat_err) - (half_w - self.lane_margin)
 
         c_lane = torch.clamp(self.weight.w_lane * self._softplus_hinge(excess), 0, 300)
-
-
-
         cost = cost + c_lane
 
         if self.use_obstacle:
             c_opponent = self._obstacle_cost(x, y)
 
             cost += c_opponent
+
 
         return cost
 
@@ -570,6 +568,7 @@ if __name__ == "__main__":
 
     sim.dynamics = dynamics
     sim.vizdynamics = dynamics
+    sim.vel_mode = CONFIG["vel_mode"]
 
 
     # 3) Objective
@@ -585,7 +584,7 @@ if __name__ == "__main__":
         running_cost=obj.compute_running_cost,
     )
 
-    # planner.terminal_state_cost = obj.terminal_costs
+    planner.terminal_state_cost = obj.terminal_costs
 
     rate = rospy.Rate(1/CONFIG["dt"])
 

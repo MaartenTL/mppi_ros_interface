@@ -134,6 +134,8 @@ class SimulatorROS:
         self.y_vals_global_path = None
         self.s_vals_global_path = None
 
+        self.vel_mode = None
+
 
     def _pose_cb(self, msg):
         with self._lock:
@@ -284,7 +286,12 @@ class SimulatorROS:
 
         # keep your original outputs driving MPPI (choose which to return):
         # return LS to actually test it in control loop, or FD to keep baseline stable.
-        return vx_fd, vy_fd, omega_fd
+        if self.vel_mode == "gt":
+            return self._vx, self._vy, self._omega
+        elif self.vel_mode == "fd":
+            return vx_fd, vy_fd, omega_fd
+        else:
+            return vx_ls, vy_ls, omega_ls
 
     def get_current_state(self, device):
         """

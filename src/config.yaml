@@ -8,7 +8,8 @@ laps: 5                     # number of laps to log
 disturbance: 0            # 0: disturbance off, 1: disturbance on
 track: "racetrack_vicon_2" # "racetrack_vicon_2" , "racetrack_vicon"
 viz_rollouts: 0           # 0: don't visualize the rollouts, 1: visualize the rollouts
-use_obstacle: 0           # don't place obstacle on the track, 1: place obstacle on track
+use_obstacle: 1           # don't place obstacle on the track, 1: place obstacle on track
+vel_mode: "gt"            # velocity estimation technique, ls: least squares, fd: finite differential????, gt: ground truth from simulator
 
 mppi: 
   device: "cpu" # cuda:0, cpu

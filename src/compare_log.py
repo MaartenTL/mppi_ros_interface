@@ -262,7 +262,7 @@ def summarise_run(df, csv_path):
     pos_per_s     = float(int_pos / T) if T > 0 else np.nan
 
     # Time in band (good tracking)
-    thresholds = [0.05, 0.10, 0.20]  # meters
+    thresholds = [0.05, 0.10, 0.20, 0.50]  # meters
     tib = {}
     for th in thresholds:
         mask = np.isfinite(lat) & (np.abs(lat) < th)
@@ -291,9 +291,40 @@ def summarise_run(df, csv_path):
 
     mean_lap_time = sum(df["lap_time"]) / (df["max_laps"][0])  # Divide by number of laps done
 
-    return {
+
+    omega = df["omega"].to_numpy(float) if "omega" in df.columns else np.full(n, np.nan)
+
+    # thresholds (tune once)
+    omega_thr = 1.0     # rad/s deemed "unstable"
+    peak_thr  = 0.8     # rad/s for counting peaks
+    steer_rate_thr = 80.0  # deg/s
+
+    # yaw-rate peaks & bursts
+    npk_o, nps_o = _count_peaks_simple(t, omega, thr=peak_thr, min_sep_s=0.10, smooth_k=5)
+    nb_o, frac_o, long_o, area_o = _burst_metrics(t, omega, thr=omega_thr)
+    domega = _diff(omega, t)
+    omega_max_steepness = float(np.nanmax(np.abs(domega))) if np.any(np.isfinite(domega)) else np.nan
+
+    # steering peaks & bursts (derivative-based bursts)
+    if "steering" in df.columns:
+        steering = ste
+        dste = _diff(steering, t)
+        # try to detect radians vs degrees for the *value* peak count
+        steer_is_rad = np.nanmax(np.abs(steering)) < 3.5
+        peak_thr_steer = (np.deg2rad(2.5) if steer_is_rad else 2.5)
+        npk_s, nps_s = _count_peaks_simple(t, steering, thr=peak_thr_steer, min_sep_s=0.10, smooth_k=5)
+
+        # for bursts, use steering rate in deg/s
+        dste_deg = np.rad2deg(dste) if steer_is_rad else dste
+        nb_sr, frac_sr, long_sr, area_sr = _burst_metrics(t, dste_deg, thr=steer_rate_thr)
+        steer_rate_max = float(np.nanmax(np.abs(dste_deg))) if np.any(np.isfinite(dste_deg)) else np.nan
+    else:
+        npk_s = nps_s = nb_sr = frac_sr = long_sr = area_sr = steer_rate_max = np.nan
+
+
+    out = {
         "file": csv_path, "mppi_model": df["mppi_model"][0], "sim_model": df["sim_model"][0],
-        "track_choice": df["track_choice"][0], "dt": df["dt"][0],"mean_comp_time": mean_comp_time,
+        "track_choice": df["track_choice"][0], "dt": df["dt"][0], "mean_comp_time": mean_comp_time,
         "duration_s": T, "samples": n, "mean_dt_s": mean_dt, "mean_lap_time": mean_lap_time,
         "distance_m": dist, "speed_mean": speed_mean, "speed_max": speed_max,
         "lat_mean_abs_m": lat_mean_abs, "lat_rms_m": lat_rms, "lat_max_abs_m": lat_max_abs,
@@ -301,11 +332,30 @@ def summarise_run(df, csv_path):
         "pos_mean_m": pos_mean, "pos_rms_m": pos_rms, "pos_max_m": pos_max,
         "int_abs_lat_m_s": int_abs_lat, "int_pos_m_s": int_pos,
         "abs_lat_per_s_m": abs_lat_per_s, "pos_err_per_s_m": pos_per_s,
-        "tib_<5cm": tib[0.05], "tib_<10cm": tib[0.10], "tib_<20cm": tib[0.20],
+        "tib_<5cm": tib[0.05], "tib_<10cm": tib[0.10], "tib_<20cm": tib[0.20], "tib_<50cm": tib[0.50],
         "thr_mean": thr_mean, "int_abs_thr": thr_l1,
-        "ste_rms": ste_rms, # "ste_rate_energy": ste_rate_energy,
+        "ste_rms": ste_rms,  # "ste_rate_energy": ste_rate_energy,
         "beta_mean_abs_deg": beta_mean_abs, "beta_max_deg": beta_max,
     }
+
+    out.update({
+        "omega_n_peaks": npk_o,
+        "omega_peaks_per_s": nps_o,
+        "omega_unstable_bursts": nb_o,
+        "omega_unstable_frac": frac_o,
+        "omega_unstable_longest_s": long_o,
+        "omega_unstable_area": area_o,
+        "omega_max_steepness": omega_max_steepness,
+
+        "steer_n_peaks": npk_s,
+        "steer_peaks_per_s": nps_s,
+        "steer_rate_unstable_bursts": nb_sr,
+        "steer_rate_unstable_frac": frac_sr,
+        "steer_rate_unstable_longest_s": long_sr,
+        "steer_rate_unstable_area": area_sr,
+        "steer_rate_max": steer_rate_max,
+    })
+    return out
 
 def plot_one(df, label=None):
 
@@ -497,6 +547,76 @@ def main():
         fig.savefig(os.path.join(fig_dir, f"{ax.get_title()}.png"), dpi=150)
     print(f"Saved figures to: {fig_dir}")
     plt.show()
+
+def _mavg(y, k):
+    """Simple moving average with odd window k."""
+    y = np.asarray(y, float)
+    if k <= 1 or k >= len(y): return y
+    if k % 2 == 0: k += 1
+    pad = k // 2
+    ypad = np.pad(y, (pad, pad), mode="edge")
+    c = np.convolve(ypad, np.ones(k)/k, mode="valid")
+    return c
+
+def _diff(y, t):
+    y = np.asarray(y, float); t = np.asarray(t, float)
+    out = np.full_like(y, np.nan, float)
+    if len(y) >= 3:
+        out[:] = np.gradient(y, t)
+    return out
+
+def _count_peaks_simple(t, y, thr, min_sep_s=0.10, smooth_k=5):
+    """
+    Count local maxima where y[i-1] < y[i] > y[i+1] AND |y[i]| >= thr.
+    Debounce peaks that are closer than min_sep_s.
+    Returns (n_peaks, peaks_per_s).
+    """
+    y = _mavg(y, smooth_k)
+    n = 0
+    last_t = -1e9
+    for i in range(1, len(y)-1):
+        if y[i] > y[i-1] and y[i] > y[i+1] and abs(y[i]) >= thr:
+            if t[i] - last_t >= min_sep_s:
+                n += 1
+                last_t = t[i]
+    dur = float(t[-1] - t[0]) if len(t) else np.nan
+    return n, (n/dur if dur and dur>0 else 0.0)
+
+def _burst_metrics(t, y, thr):
+    """
+    Treat |y|>thr as 'unstable'. Return (#bursts, frac_time, longest_s, area_above_thr).
+    """
+    t = np.asarray(t, float); y = np.abs(np.asarray(y, float))
+    if len(t) < 2:
+        return 0, np.nan, np.nan, np.nan
+    mask = y > thr
+    if not np.any(mask):
+        return 0, 0.0, 0.0, 0.0
+
+    # contiguous regions
+    edges = np.diff(mask.astype(int), prepend=0, append=0)
+    starts = np.flatnonzero(edges == +1)
+    ends   = np.flatnonzero(edges == -1) - 1
+
+    T = t[-1] - t[0]
+    n_bursts = 0
+    time_above = 0.0
+    longest = 0.0
+    area = 0.0
+    for s, e in zip(starts, ends):
+        if e <= s:
+            continue
+        n_bursts += 1
+        t0, t1 = t[s], t[e]
+        time_above += (t1 - t0)
+        longest = max(longest, t1 - t0)
+        tt = t[s:e+1]; yy = y[s:e+1] - thr
+        dt = np.diff(tt, prepend=tt[0]); dt[0] = 0.0
+        area += float(np.sum(np.maximum(yy, 0.0) * dt))
+
+    frac = (time_above / T) if T > 0 else np.nan
+    return n_bursts, frac, longest, area
+
 
 if __name__ == "__main__":
     main()
