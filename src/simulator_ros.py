@@ -93,18 +93,23 @@ class SimulatorROS:
         self.past_yaw_vicon = np.zeros(5)
         self.past_time_vicon= np.zeros(5)
 
+        self.past_x_vicon_old   = np.zeros(5)
+        self.past_y_vicon_old   = np.zeros(5)
+        self.past_yaw_vicon_old = np.zeros(5)
+        self.past_time_vicon_old = np.zeros(5)
+
         self.vx_publisher = rospy.Publisher(f"/vx_est_{car_number}", Float32, queue_size=1)
         self.vy_publisher = rospy.Publisher(f"/vy_est_{car_number}", Float32, queue_size=1)
         self.w_publisher  = rospy.Publisher(f"/omega_est_{car_number}",   Float32, queue_size=1)
 
-        # # extra publishers for direct comparison
-        # self.vx_publisher_fd = rospy.Publisher("vx_est_fd", Float32, queue_size=1)
-        # self.vy_publisher_fd = rospy.Publisher("vy_est_fd", Float32, queue_size=1)
-        # self.w_publisher_fd = rospy.Publisher("omega_est_fd", Float32, queue_size=1)
-        #
-        # self.vx_publisher_ls = rospy.Publisher("vx_est_ls", Float32, queue_size=1)
-        # self.vy_publisher_ls = rospy.Publisher("vy_est_ls", Float32, queue_size=1)
-        # self.w_publisher_ls = rospy.Publisher("omega_est_ls", Float32, queue_size=1)
+        # extra publishers for direct comparison
+        self.vx_publisher_fd = rospy.Publisher("vx_est_fd", Float32, queue_size=1)
+        self.vy_publisher_fd = rospy.Publisher("vy_est_fd", Float32, queue_size=1)
+        self.w_publisher_fd = rospy.Publisher("omega_est_fd", Float32, queue_size=1)
+
+        self.vx_publisher_ls = rospy.Publisher("vx_est_ls", Float32, queue_size=1)
+        self.vy_publisher_ls = rospy.Publisher("vy_est_ls", Float32, queue_size=1)
+        self.w_publisher_ls = rospy.Publisher("omega_est_ls", Float32, queue_size=1)
 
         # --- α–β filter params (tuneable) ---
         self.ab_alpha = rospy.get_param("~ab_alpha", 0.2)  # position gain
@@ -170,26 +175,26 @@ class SimulatorROS:
             self.y = pos.y
             self.yaw = yaw
 
-            # # rospy.loginfo(f"[MPPI vel est] x: {pos.x}, y: {pos.y}, yaw: {yaw}, time: {msg.header.stamp.to_sec()}")
-            # # ----- FD (end-point) -----
-            # dt_fd = (self.past_time_vicon[-1] - self.past_time_vicon[0])
-            # if dt_fd <= 1e-9:
-            #     vx_abs_fd, vy_abs_fd, omega_fd = 0.0, 0.0, 0.0
-            # else:
-            #     vx_abs_fd = (self.past_x_vicon[-1] - self.past_x_vicon[0]) / dt_fd
-            #     vy_abs_fd = (self.past_y_vicon[-1] - self.past_y_vicon[0]) / dt_fd
-            #
-            #     # unwrap only for FD omega across the window:
-            #     delta_yaw = self.past_yaw_vicon[-1] - self.past_yaw_vicon[0]
-            #     if delta_yaw > np.pi:
-            #         delta_yaw -= 2 * np.pi
-            #     elif delta_yaw < -np.pi:
-            #         delta_yaw += 2 * np.pi
-            #     omega_fd = delta_yaw / dt_fd
-            #
-            # # rotate FD using current yaw (your original behaviour)
-            # vx_fd = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
-            # vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
+            # rospy.loginfo(f"[MPPI vel est] x: {pos.x}, y: {pos.y}, yaw: {yaw}, time: {msg.header.stamp.to_sec()}")
+            # ----- FD (end-point) -----
+            dt_fd = (self.past_time_vicon[-1] - self.past_time_vicon[0])
+            if dt_fd <= 1e-9:
+                vx_abs_fd, vy_abs_fd, omega_fd = 0.0, 0.0, 0.0
+            else:
+                vx_abs_fd = (self.past_x_vicon[-1] - self.past_x_vicon[0]) / dt_fd
+                vy_abs_fd = (self.past_y_vicon[-1] - self.past_y_vicon[0]) / dt_fd
+
+                # unwrap only for FD omega across the window:
+                delta_yaw = self.past_yaw_vicon[-1] - self.past_yaw_vicon[0]
+                if delta_yaw > np.pi:
+                    delta_yaw -= 2 * np.pi
+                elif delta_yaw < -np.pi:
+                    delta_yaw += 2 * np.pi
+                omega_fd = delta_yaw / dt_fd
+
+            # rotate FD using current yaw (your original behaviour)
+            vx_fd = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
+            vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
 
             # ----- LS (Method A) -----
             yaw_unwrapped = np.unwrap(self.past_yaw_vicon)
@@ -223,9 +228,18 @@ class SimulatorROS:
             # self.vy_publisher_ls.publish(Float32(vy_ls))
             # self.w_publisher_ls.publish(Float32(omega_ls))
 
-            self.vx = vx_ls
-            self.vy = vy_ls
-            self.omega = omega_ls
+            if self.vel_mode == "gt":
+                self.vx = self._vx
+                self.vy = self._vy
+                self.omega = self._omega
+            elif self.vel_mode == "fd":
+                self.vx = vx_fd
+                self.vy = vy_fd
+                self.omega = omega_fd
+            else:
+                self.vx = vx_ls
+                self.vy = vy_ls
+                self.omega = omega_ls
 
     def _vx_cb(self, msg):
         self._vx = msg.data
@@ -384,6 +398,28 @@ class SimulatorROS:
         Returns a torch.Tensor of shape [1,3] = [x, y, yaw],
         or None if we haven't received a pose yet.
         """
+
+        # with self._lock:
+        #     msg = self._latest_msg
+        # if msg is None:
+        #     return None
+        #
+        #     # Extract position
+        # pos = msg.pose.pose.position
+        # # Extract yaw from the quaternion
+        # q = msg.pose.pose.orientation
+        # yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
+        #
+        # # vx = self._vx
+        # # vy = self._vy
+        # # omega = self._omega
+        #
+        # vx, vy, omega = self.vicon_pos_2_vel(pos.x, pos.y, yaw, msg.header.stamp.to_sec(), msg.header.stamp)
+        #
+        # self.vx_publisher.publish(Float32(vx))
+        # self.vy_publisher.publish(Float32(vy))
+        # self.w_publisher.publish(Float32(omega))
+
         self.vx_publisher.publish(Float32(self.vx))
         self.vy_publisher.publish(Float32(self.vy))
         self.w_publisher.publish(Float32(self.omega))

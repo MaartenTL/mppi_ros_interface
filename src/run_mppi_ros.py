@@ -805,7 +805,7 @@ if __name__ == "__main__":
             sim.publish_rollouts(rollouts)
         #
 
-        dth = np.clip(action_rate[0,0].item(), th_min, th_max)
+        dth = action_rate[0,0].item()
         dst = np.clip(action_rate[0,1].item(), steer_min, steer_max)
 
 
@@ -817,7 +817,7 @@ if __name__ == "__main__":
 
         # sim.send_control(torch.tensor([last_throttle, dst], dtype=torch.float32))
 
-        sim.send_control(torch.tensor([dth, dst], dtype=torch.float32))
+        sim.send_control(torch.tensor([np.clip(dth, th_min, th_max), dst], dtype=torch.float32))
 
         action_msg = Float32MultiArray()
         action_msg.data = action_rate.reshape(-1).tolist() # list(action.to(torch.float32))

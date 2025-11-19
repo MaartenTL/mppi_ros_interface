@@ -3,13 +3,13 @@ dt: 0.05 # 0.05
 steps: 1000
 sim_model: "dynamic"          # kinematic, dynamic, SVGP, SVGP_wet
 mppi_model: "dynamic"         # kinematic, dynamic, SVGP
-v_target: 1.5               # 2.5, 4.0, 5.0
+v_target: 2.5               # 2.5, 4.0, 5.0
 laps: 1                     # number of laps to log
 disturbance: 0            # 0: disturbance off, 1: disturbance on
 track: "racetrack_vicon_2" # "racetrack_vicon_2" , "racetrack_vicon"
 viz_rollouts: 0           # 0: don't visualize the rollouts, 1: visualize the rollouts
-use_obstacle: 0           # don't place obstacle on the track, 1: place obstacle on track
-vel_mode: "fd"            # velocity estimation technique, ls: least squares, fd: finite differential????, gt: ground truth from simulator
+use_obstacle: 1           # don't place obstacle on the track, 1: place obstacle on track
+vel_mode: "ls"            # velocity estimation technique, ls: least squares, fd: finite differential????, gt: ground truth from simulator
 env: "sim"                # "lab" , "sim" -- used for resetting the sim or not
 troubleshoot: 0           # 0: off, 1: on - save rollouts when troubleshooting
 
@@ -26,9 +26,12 @@ mppi:
   horizon: 12 # 12, 20                 # At least 12 for Halton Sampling
   u_per_command: 12                # Make same as horizon so control over entire horizon gets outputted
   lambda_: 20 # 0.05, 0.1
-  u_min: [0.0, -1.0] # [-0.5, -0.8] # [-0.5, -2.0] # [0.0, -0.6]    # [0.0, -1.0]
-  u_max: [0.9, 1.0] # [0.5, 0.8] # [0.5, 2.0] # [0.6, 0.6]     # [1.0, 1.0]
-  noise_sigma: [[0.3, 0.0], [0., 0.3]] # [[0.3, 0.0], [0., 0.3]] # [[0.8, 0.], [0., 3.0]]  # [[0.8, 0.], [0., 1.5]] # [[0.1, 0.], [0., 0.2]] [[0.5, 0.], [0., 0.5]]
+#  u_min: [0.0, -1.0] # [-0.5, -0.8] # [-0.5, -2.0] # [0.0, -0.6]    # [0.0, -1.0]
+#  u_max: [0.9, 1.0] # [0.5, 0.8] # [0.5, 2.0] # [0.6, 0.6]     # [1.0, 1.0]
+#  noise_sigma: [[0.3, 0.0], [0., 0.3]] # [[0.8, 0.], [0., 3.0]]  # [[0.8, 0.], [0., 1.5]] # [[0.1, 0.], [0., 0.2]] [[0.5, 0.], [0., 0.5]]
+  u_min: [-1.5, -1.0 ]
+  u_max: [1.5, 1.0 ]
+  noise_sigma: [[0.5, 0.0], [0., 0.3]]
   update_cov: False
   rollout_var_discount: 0.9 # 0.95
   sample_null_action: True

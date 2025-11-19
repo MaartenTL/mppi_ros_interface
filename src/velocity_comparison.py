@@ -66,7 +66,7 @@ class Recorder:
             r['t'] = r['t'] - t0
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = os.path.join(self.outdir, f"vel_compare_car{self.car}_{stamp}.csv")
+        csv_path = os.path.join(self.outdir, f"{stamp}_vel_compare_car{self.car}.csv")
         with open(csv_path, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=self.rows[0].keys())
             w.writeheader(); w.writerows(self.rows)
@@ -90,7 +90,7 @@ class Recorder:
             plt.plot(T, ls_old, label=f"{sig} LS OLD", alpha =0.9)
             plt.xlabel("time [s]"); plt.ylabel(ylabel); plt.title(f"{sig} comparison")
             plt.legend(); plt.tight_layout()
-            out = os.path.join(self.outdir, f"{sig}_compare_car{self.car}_{stamp}.png")
+            out = os.path.join(self.outdir, f"_{stamp}_{sig}_compare_car{self.car}.png")
             plt.savefig(out, dpi=150)
             rospy.loginfo(f"Wrote plot: {out}")
             plt.show()

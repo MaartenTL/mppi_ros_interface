@@ -156,9 +156,10 @@ class RateAugmentedDynamics:
 
         # integrate to get actual commands, with saturation
         # th_new = torch.clamp(th + dth * self._dt, self.th_min, self.th_max)
-        # steer_new = torch.clamp(steer + dsteer * self._dt, self.steer_min, self.steer_max)
-
         th_new = dth
+
+
+        # steer_new = torch.clamp(steer + dsteer * self._dt, self.steer_min, self.steer_max)
         steer_new = dsteer
 
         # underlying dynamics still expect [throttle, steer]
