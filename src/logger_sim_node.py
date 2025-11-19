@@ -9,7 +9,7 @@ import datetime
 from std_msgs.msg import Float32, Float32MultiArray, Int32, String
 import json
 import numpy as np
-from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, RateAugmentedDynamics
+from dynamics import Kinematic_Bicycle, Dynamic_Bicycle
 from simulator_ros import SimulatorROS
 from run_mppi_ros import ROSObjective
 import yaml
@@ -32,9 +32,9 @@ class DARTLogger:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.env = env
         if env == "sim":
-            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1dart_log_car{car}_{timestamp}.csv")
+            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1dart_log_sim_car{car}_{timestamp}.csv")
         elif env == "lab":
-            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1lab_log_car{car}_{timestamp}.csv")
+            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1lab_log_sim_car{car}_{timestamp}.csv")
         rate_hz = rospy.get_param("~rate", 20) # equal to timestep from simulator
 
         self.lock = Lock()
@@ -45,7 +45,6 @@ class DARTLogger:
             "throttle": None, "steering": None,
             "comp_time": None, "lap_time": 0.0,
             "max_laps": None, "expected_cost": 0.0,
-            "throttle_rate": 0.0, "steering_rate": 0.0,
         }
         self.costs = {
             "lat_cost": 0.0, "lag_cost": 0.0, "heading_cost": 0.0,
@@ -56,27 +55,25 @@ class DARTLogger:
         rospy.Subscriber(f"/vx_{car}", Float32, self.cb_vx, queue_size=100)
         rospy.Subscriber(f"/vy_{car}", Float32, self.cb_vy, queue_size=100)
         rospy.Subscriber(f"/omega_{car}", Float32, self.cb_omega, queue_size=100)
-        rospy.Subscriber(f"/throttle_{car}", Float32, self.cb_throttle, queue_size=100)
-        rospy.Subscriber(f"/steering_{car}", Float32, self.cb_steer, queue_size=100)
+        rospy.Subscriber(f"/throttle_sim_{car}", Float32, self.cb_throttle, queue_size=100)
+        rospy.Subscriber(f"/steering_sim_{car}", Float32, self.cb_steer, queue_size=100)
         rospy.Subscriber(f"/comptime_{car}", Float32, self.cb_comp, queue_size=100)
 
-        rospy.Subscriber(f"/vx_est_{car}", Float32, self.cb_vx_est, queue_size=100)
-        rospy.Subscriber(f"/vy_est_{car}", Float32, self.cb_vy_est, queue_size=100)
-        rospy.Subscriber(f"/omega_est_{car}", Float32, self.cb_omega_est, queue_size=100)
+        rospy.Subscriber(f"/vx_est_sim_{car}", Float32, self.cb_vx_est, queue_size=100)
+        rospy.Subscriber(f"/vy_est_sim_{car}", Float32, self.cb_vy_est, queue_size=100)
+        rospy.Subscriber(f"/w_est_sim_{car}", Float32, self.cb_omega_est, queue_size=100)
 
 
-
-        self.meta = { "mppi": "unknown", "mppi_model": "unknown", "sim_model": "unknown", "track_choice": "unknown", "dt": float('nan'), "V_target": float('nan'), "vel_mode": "unknown", "obstacle": float('nan')}
+        self.meta = { "mppi": "unknown", "mppi_model": "unknown", "sim_model": "unknown", "track_choice": "unknown", "dt": float('nan'), "V_target": float('nan')}
         rospy.Subscriber("mppi_meta", String, self.cb_meta, queue_size=1)
 
         self.outfile = out
         self.csvfile = open(self.outfile, "w", newline="")
         self.writer = csv.writer(self.csvfile)
         self.writer.writerow([
-            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps","Vel_estimator","Use_obstacle",
+            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps",
             "weights", "lap_time", "total expected cost",
-            "t", "x", "y", "yaw", "vx", "vy", "omega","vx est", "vy est", "omega est",
-            "throttle", "steering","throttle rate", "steering rate", "speed", "beta",
+            "t", "x", "y", "yaw", "vx", "vy", "omega","vx est", "vy est", "omega est", "throttle", "steering", "speed", "beta",
             "comp_time", "lat cost", "lag cost", "heading cost", "speed cost", "vy cost", "omega cost",
             # # selected rollout prediction:
             # "sel_ref_x", "sel_ref_y", "sel_ref_yaw",
@@ -109,8 +106,8 @@ class DARTLogger:
         rospy.Subscriber("lap_time", Float32, self.cb_lap_time, queue_size=1)
         self.new_lap_time = False
 
-        rospy.Subscriber("/mppi_action", Float32MultiArray, self.cb_action, queue_size=1)
-        self.sim = SimulatorROS(car, 2)
+        rospy.Subscriber("/mppi_action_sim", Float32MultiArray, self.cb_action, queue_size=1)
+        self.sim = SimulatorROS(car, 3)
         self.lap = 0.0
         self.total_expected_cost = 0.0
 
@@ -122,51 +119,51 @@ class DARTLogger:
 
         if not self.event_driven:
             self.timer = rospy.Timer(rospy.Duration(1.0 / float(rate_hz)), lambda _: self.write_row())
-            rospy.loginfo(f"[logger_node] Writing to {self.outfile} @ {rate_hz} Hz (timer)")
+            rospy.loginfo(f"[logger_sim_node] Writing to {self.outfile} @ {rate_hz} Hz (timer)")
         else:
             self.timer = None
-            rospy.loginfo(f"[logger_node] Writing to {self.outfile} on NEW CONTROL events")
+            rospy.loginfo(f"[logger_sim_node] Writing to {self.outfile} on NEW CONTROL events")
+
+
+        self.N = 15
+        self.dt = 0.1
 
 
 
     def cb_action(self, msg):
         # This function publishes the path generated by the proposed action
         with self.lock:
-            if self.meta_written_once:
-                T = self.meta["mppi"]["horizon"] #self.meta.hor  # or read from a ROS param
-                NU = 2
-                action = np.array(msg.data, dtype=np.float32).reshape(T, NU)
-                self.sim.publish_path(action, self.data["throttle"], self.data["steering"])
-
-                self.data["throttle_rate"] = action[0,0].item()
-                self.data["steering_rate"] = action[0,1].item()
-
-                # rospy.loginfo(f"[MPPI] control sequence: {action}")
-
-                expected_cost, weight, lat_err, lag_err, head_err, speed_err, vy, omega = self.obj.compute_expected_cost(self.sim.states)
-                total_expected_cost = sum(expected_cost)
-                self.data["expected_cost"] = total_expected_cost.item()
-
-                # rospy.loginfo(f"[MPPI logger] lag error: {lag_err}")
-                total_lat_cost = sum(weight.q_lat * lat_err ** 2)
-                total_lag_cost = sum(weight.q_lag * lag_err ** 2)
-                total_heading_cost = sum(weight.q_head * head_err ** 2)
-                total_speed_cost = sum(weight.q_v * speed_err ** 2)
-                total_vy_cost = sum(weight.q_vy * vy ** 2)
-                total_omega_cost = sum(weight.q_omega * omega ** 2)
-
-                self.costs["lat_cost"] = total_lat_cost.item()
-                self.costs["lag_cost"] = total_lag_cost.item()
-                self.costs["heading_cost"] = total_heading_cost.item()
-                self.costs["speed_cost"] = total_speed_cost.item()
-                self.costs["vy_cost"] = total_vy_cost.item()
-                self.costs["omega_cost"] = total_omega_cost.item()
-
+            # if self.meta_written_once:
+            #     T = self.N # self.meta["mppi"]["horizon"] #self.meta.hor  # or read from a ROS param
+            #     NU = 2
+            #     action = np.array(msg.data, dtype=np.float32).reshape(T, NU)
+            #
+            #     self.sim.publish_path(action)
+            #
+            #     # rospy.loginfo(f"[MPCC logger] control sequence: {action}")
+            #
+            #     expected_cost, weight, lat_err, lag_err, head_err, speed_err, vy, omega = self.obj.compute_expected_cost(self.sim.states)
+            #     total_expected_cost = sum(expected_cost)
+            #     self.data["expected_cost"] = total_expected_cost.item()
+            #
+            #     total_lat_cost = sum(weight.q_lat * lat_err ** 2)
+            #     total_lag_cost = sum(weight.q_lag * lag_err ** 2)
+            #     total_heading_cost = sum(weight.q_head * head_err ** 2)
+            #     total_speed_cost = sum(weight.q_v * speed_err ** 2)
+            #     total_vy_cost = sum(weight.q_vy * vy ** 2)
+            #     total_omega_cost = sum(weight.q_omega * omega ** 2)
+            #
+            #     self.costs["lat_cost"] = total_lat_cost.item()
+            #     self.costs["lag_cost"] = total_lag_cost.item()
+            #     self.costs["heading_cost"] = total_heading_cost.item()
+            #     self.costs["speed_cost"] = total_speed_cost.item()
+            #     self.costs["vy_cost"] = total_vy_cost.item()
+            #     self.costs["omega_cost"] = total_omega_cost.item()
 
 
             # OUTSIDE the lock: event-driven write
             if self.event_driven:
-                # print("[MPPI] logging new row -------------------------------------------------")
+                print("[MPCC] logging new row -------------------------------------------------")
                 self.flush_row()
 
 
@@ -226,7 +223,7 @@ class DARTLogger:
                         self.meta[k] = d[k]
                 self.meta_received = True
         except Exception as e:
-            rospy.logwarn(f"[logger_node] meta parse failed: {e}")
+            rospy.logwarn(f"[logger_sim_node] meta parse failed: {e}")
 
     def cb_lap_count(self, msg):
         try:
@@ -268,44 +265,26 @@ class DARTLogger:
             elif sim_model == 4:
                 sim_model = "SVGP_slippery"
 
-
-
             if self.meta["mppi_model"] == "Kinematic_Bicycle":
-                base_dynamics = Kinematic_Bicycle(self.meta["dt"], device="cpu")
+                self.sim.vizdynamics = Kinematic_Bicycle(self.dt, device="cpu")
             elif self.meta["mppi_model"] == "Dynamic_Bicycle":
-                base_dynamics = Dynamic_Bicycle(self.meta["dt"], device="cpu")
+                self.sim.vizdynamics = Dynamic_Bicycle(self.dt, device="cpu")
 
-            th_min = CONFIG["throttle_min"]
-            th_max = CONFIG["throttle_max"]
-            steer_min = CONFIG["steering_min"]
-            steer_max = CONFIG["steering_max"]
+            self.sim.vizdynamics = Kinematic_Bicycle(self.dt, device="cpu")
 
-            dynamics = RateAugmentedDynamics(
-                base_dyn=base_dynamics,
-                dt=self.meta["dt"],
-                th_min=th_min,
-                th_max=th_max,
-                steer_min=steer_min,
-                steer_max=steer_max,
-                device=CONFIG["device"],
-            )
-
-            self.sim.vizdynamics = dynamics
-
-            self.obj = ROSObjective(self.meta["track_choice"],self.meta["mppi"]["horizon"], self.meta["dt"], self.meta["V_target"],0,0, "cpu")
+            self.obj = ROSObjective(self.meta["track_choice"],self.N, self.dt, self.meta["V_target"],0,0, "cpu")
 
             meta_vals = [
                 self.meta["mppi"],
                 self.meta["mppi_model"], sim_model,
                 self.meta["track_choice"], self.meta["dt"],
                 self.meta["V_target"],self.max_laps,
-                self.meta["vel_mode"],self.meta["obstacle"],
             ]
             weights = self.obj.weight.__dict__
             self.meta_written_once = True
         else:
             # write blanks after the first time
-            meta_vals = ["", "", "", "", "", "","","",""]
+            meta_vals = ["", "", "", "", "", "",""]
             weights = None
 
         if self.new_lap_time:
@@ -317,9 +296,8 @@ class DARTLogger:
             *meta_vals, weights, self.data["lap_time"],self.data["expected_cost"],
             self.data["t"], self.data["x"], self.data["y"], self.data["yaw"],
             self.data["vx"], self.data["vy"], self.data["omega"],
-            self.data["vx_est"], self.data["vy_est"], self.data["omega_est"],
-            self.data["throttle"], self.data["steering"],self.data["throttle_rate"], self.data["steering_rate"],
-            math.hypot(self.data["vx"], self.data["vy"]),
+            self.data["vx_est"], self.data["vy_est"], self.data["omega_est"] ,
+            self.data["throttle"], self.data["steering"],math.hypot(self.data["vx"], self.data["vy"]),
             math.atan2(self.data["vy"], self.data["vx"]),
             self.data["comp_time"],self.costs["lat_cost"],self.costs["lag_cost"], self.costs["heading_cost"],
             self.costs["speed_cost"], self.costs["vy_cost"], self.costs["omega_cost"]
@@ -331,7 +309,7 @@ class DARTLogger:
 
         if self.lap > self.max_laps and self.logging_enabled:
             self.logging_enabled = False
-            rospy.loginfo(f"[logger_node] Received lap {self.lap} > {self.max_laps}. Stopping logging.")
+            rospy.loginfo(f"[logger_sim_node] Received lap {self.lap} > {self.max_laps}. Stopping logging.")
             try:
                 self.timer.shutdown()
             except Exception:
@@ -349,7 +327,7 @@ class DARTLogger:
             pass
 
 if __name__ == "__main__":
-    rospy.init_node("dart_logger_node")
+    rospy.init_node("dart_logger_sim_node")
 
     CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
     laps = CONFIG["laps"]

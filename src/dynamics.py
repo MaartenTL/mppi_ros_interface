@@ -31,7 +31,6 @@ class Kinematic_Bicycle:
         x, y, yaw, vx, vy, w = states.unbind(dim=1)
 
         throttle, steer = actions.unbind(dim=1)
-
         # evaluate steering angle
         steering_angle = mf.steering_2_steering_angle(steer, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self)
 
@@ -118,6 +117,67 @@ class Dynamic_Bicycle:
         new_states = torch.stack([x, y, yaw, vx, vy, w], dim=1)
 
         return new_states, actions
+
+class RateAugmentedDynamics:
+    """
+    Wrap a base dynamics model so that MPPI samples [dthrottle, dsteer]
+    but the underlying model still uses [throttle, steer].
+
+    State for MPPI: [x, y, yaw, vx, vy, w, throttle, steer]  (nx = 8)
+    Action for MPPI: [dthrottle, dsteer]
+    """
+    def __init__(self, base_dyn, dt=0.05,
+                 th_min=0.0, th_max=1.0,
+                 steer_min=-1.0, steer_max=1.0,
+                 device="cpu") -> None:
+        self.base_dyn = base_dyn          # Kinematic_Bicycle or Dynamic_Bicycle
+        self._dt = dt
+        self._device = device
+        self.th_min = th_min
+        self.th_max = th_max
+        self.steer_min = steer_min
+        self.steer_max = steer_max
+
+    def step(self, states: torch.Tensor, actions: torch.Tensor, t: int):
+        """
+        states: [K, 8] = [x, y, yaw, vx, vy, w, throttle, steer]
+        actions: [K, 2] = [dthrottle, dsteer]  (what MPPI samples)
+        returns:
+            new_states: [K, 8]
+            actions_out: [K, 2]  (we return the *rates* again for costs)
+        """
+        # split state
+        x6   = states[:, :6]             # vehicle states
+        th   = states[:, 6]              # current throttle
+        steer = states[:, 7]             # current steer
+
+        # split actions as *rates*
+        dth, dsteer = actions.unbind(dim=1)
+
+        # integrate to get actual commands, with saturation
+        # th_new = torch.clamp(th + dth * self._dt, self.th_min, self.th_max)
+        # steer_new = torch.clamp(steer + dsteer * self._dt, self.steer_min, self.steer_max)
+
+        th_new = dth
+        steer_new = dsteer
+
+        # underlying dynamics still expect [throttle, steer]
+        u_abs = torch.stack([th_new, steer_new], dim=1)  # [K, 2]
+
+        # step the base model with the absolute commands
+        x6_new, _ = self.base_dyn.step(x6, u_abs, t)
+
+        new_states = torch.cat([x6_new, th_new.unsqueeze(1), steer_new.unsqueeze(1)], dim=1)
+
+        actions_out = actions
+
+        return new_states, actions_out
+
+
+
+
+
+
 
 class SVGP:  # RK4 wants a function that takes as input time and state
     def __init__(self, dt=0.05, device="cpu") -> None:

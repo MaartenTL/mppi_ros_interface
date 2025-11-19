@@ -385,50 +385,50 @@ def plot_one(df, label=None):
 
     # Speed & vy
     plt.figure("Speed/vy")
-    plt.plot(df["time"], np.hypot(df["vx"], df["vy"]), label=f"speed {label}" if label else "speed")
-    if "vy" in df: plt.plot(df["time"], df["vy"], label=f"vy {label}" if label else "vy")
+    plt.plot(np.hypot(df["vx"], df["vy"]), label=f"speed {label}" if label else "speed")
+    if "vy" in df: plt.plot(df["vy"], label=f"vy {label}" if label else "vy")
     plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title("Speed and Lateral Velocity"); plt.legend()
 
     # Yaw rate & beta
     plt.figure("Omega")
-    plt.plot(df["time"], df["omega"], label=f"omega {label}" if label else "omega")
+    plt.plot(df["omega"], label=f"omega {label}" if label else "omega")
     plt.xlabel("time [s]"); plt.ylabel("yaw rate [rad/s]"); plt.title("Yaw rate"); plt.legend()
 
     plt.figure("Beta")
-    plt.plot(df["time"], np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
+    plt.plot(np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
     plt.xlabel("time [s]"); plt.ylabel("sideslip [deg/s]"); plt.title("Sideslip"); plt.legend()
 
     # Controls
     plt.figure("Throttle")
-    plt.plot(df["time"], df["throttle"], label=f"throttle {label}" if label else "throttle", drawstyle="steps-post")
+    plt.plot(df["throttle"], label=f"throttle {label}" if label else "throttle", drawstyle="steps-post")
     plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title("Throttle"); plt.legend()
 
     plt.figure("Steering")
-    plt.plot(df["time"], df["steering"], label=f"steering {label}" if label else "steering", drawstyle="steps-post")
+    plt.plot(df["steering"], label=f"steering {label}" if label else "steering", drawstyle="steps-post")
     plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title("Steering"); plt.legend()
 
     # Rates
     if "throttle rate" in df.columns:
         plt.figure("Throttle Rate")
-        plt.plot(df["time"], df["throttle rate"], label=f"throttle_rate {label}" if label else "throttle_rate", drawstyle="steps-post")
+        plt.plot(df["throttle rate"], label=f"throttle_rate {label}" if label else "throttle_rate", drawstyle="steps-post")
         plt.xlabel("time [s]"); plt.ylabel("throttle rate []"); plt.title("Throttle Rate"); plt.legend()
 
     if "steering rate" in df.columns:
         plt.figure("Steering Rate")
-        plt.plot(df["time"], df["steering rate"], label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
+        plt.plot(df["steering rate"], label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
         plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
 
     # Errors
     plt.figure("Lateral Error")
-    plt.plot(df["time"], df["lat_err"], label=f"lat {label}" if label else "lat")
+    plt.plot(df["lat_err"], label=f"lat {label}" if label else "lat")
     plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
 
     plt.figure("Lag Error")
-    plt.plot(df["time"], df["lag_err"], label=f"lag {label}" if label else "lag")
+    plt.plot(df["lag_err"], label=f"lag {label}" if label else "lag")
     plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
 
     plt.figure("Pos Error")
-    plt.plot(df["time"], df["pos_err"], label=f"pos {label}" if label else "pos")
+    plt.plot(df["pos_err"], label=f"pos {label}" if label else "pos")
     plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
 
     t = df["time"].to_numpy(float)

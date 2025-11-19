@@ -5,22 +5,33 @@ import torch
 import os
 import time
 import subprocess
+import csv
+import datetime
+
+import matplotlib.pyplot as plt
+
 
 from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
 from functions_for_controllers import find_s_of_closest_point_on_global_path, produce_track,produce_marker_array_rviz, produce_marker_rviz, steer_angle_2_command
 import numpy as np
-from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, SVGP
+from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, SVGP, RateAugmentedDynamics
+from mppi_online_plot import OnlineMppiPlotter
+# noinspection PyUnresolvedReferences
 from tf.transformations import euler_from_quaternion
 from path_track_definitions import generate_track, generate_path_data
+# noinspection PyUnresolvedReferences
 from dynamic_reconfigure.client import Client
+# noinspection PyUnresolvedReferences
 from std_msgs.msg import String, Float32, MultiArrayDimension, Float32MultiArray, Int32
 from collections import deque
 import json
+# noinspection PyUnresolvedReferences
+from geometry_msgs.msg import PointStamped, Point
 
 abs_path = os.path.dirname(os.path.abspath(__file__))
-
-from visualization_msgs.msg import MarkerArray
+# noinspection PyUnresolvedReferences
+from visualization_msgs.msg import MarkerArray, Marker
 
 
 class StateDisturber:
@@ -88,11 +99,11 @@ class StateDisturber:
 
 class MPPIWeights:
     def __init__(self):
-        self.q_lat = 0.5 # 0.5 1.0
-        self.q_lag = 2.5 # 1.0 2.5
-        self.q_head = 0.25 # 0.25 # 0.25
-        self.q_v = 0.1 # 0.0
-        self.q_vy = 0.2 # 0.2
+        self.q_lat = 1.0 # 0.5 1.0
+        self.q_lag = 1.0 # 1.0 2.5
+        self.q_head = 1.0 # 0.25 # 0.25
+        self.q_v = 1.0 # 0.0
+        self.q_vy = 0.0 # 0.2 # 0.2
         self.q_omega = 0.0 # 0.0
 
         self.ter_q_lat = self.q_lat * 10.0 # 10.0
@@ -102,17 +113,20 @@ class MPPIWeights:
         self.ter_q_vy = self.q_vy * 10.0
         self.ter_q_omega = self.q_omega * 10.0 #0.5
 
-        self.q_u_throttle = 0.0 # 0.01
-        self.q_u_steering = 0.5 #0.2 # 0.1
-        self.q_du_steer = 0.0
+        self.q_u_throttle = 0.1 # 0.01
+        self.q_du_throttle = 0.0
 
-        self.w_lane =  100.0 # 100.0  # weight for lane penalty
+        self.q_u_steering = 0.1 # 0.2 # 0.1
+        self.q_du_steering = 0.01
+
+
+        self.w_lane =  100.0 # 100.0 # 100.0  # weight for lane penalty
 
         self.w_opponent = 300.0 # weight for opponent
 
 
 class ROSObjective:
-    def __init__(self, track_choice, N, dt, V_target, use_obstacle, device="cpu"):
+    def __init__(self, track_choice, N, dt, V_target, use_obstacle, troubleshoot, device="cpu"):
 
         self.s_vals_global_path,\
         self.x_vals_global_path,\
@@ -125,6 +139,8 @@ class ROSObjective:
         self.k_4_local_path = generate_path_data(track_choice)
 
         self.V_target = V_target  # target velocity
+
+        self.troubleshoot = troubleshoot
 
         self.weight   =  MPPIWeights()
 
@@ -228,6 +244,13 @@ class ROSObjective:
 
 
         dx = torch.tensor(x) - ref_x
+        # rospy.loginfo(f"[MPPI logger] yaw: {yaw}")
+        # rospy.loginfo(f"[MPPI logger] ref_yaw: {ref_yaw}")
+        # rospy.loginfo(f"[MPPI logger] ref_x: {ref_x}")
+        # rospy.loginfo(f"[MPPI logger] x: {x}")
+        # rospy.loginfo(f"[MPPI logger] dx: {dx}")
+
+
         dy = torch.tensor(y) - ref_y
         lag_err = dx * self.ref_yaw_cos + dy * self.ref_yaw_sin
         lat_err = -dx * self.ref_yaw_sin + dy * self.ref_yaw_cos
@@ -235,6 +258,13 @@ class ROSObjective:
 
         speed = torch.sqrt(torch.tensor(vx) ** 2 + torch.tensor(vy) ** 2)
         speed_err = speed - V_target
+
+        # rospy.loginfo(f"[MPPI logger] ref_y: {ref_y}")
+        # rospy.loginfo(f"[MPPI logger] y: {y}")
+        # rospy.loginfo(f"[MPPI logger] dy: {dy}")
+        #
+        # rospy.loginfo(f"[MPPI logger] v target: {V_target}")
+        # rospy.loginfo(f"[MPPI logger] v: {speed}")
 
         expected_cost = (self.weight.q_lat * lat_err ** 2
                 + self.weight.q_lag * lag_err ** 2
@@ -270,10 +300,15 @@ class ROSObjective:
                 + self.weight.ter_q_omega * omega ** 2)
 
         steer_seq = actions[:, :, 1]  # [K, T]
-        dsteer = (steer_seq[:, 1:] - steer_seq[:, :-1]) / self.dt  # [K, T-1], rate [rad/s]
-        rate_cost = self.weight.q_du_steer * torch.sum(dsteer ** 2, dim=1)  # [K]
+        # dsteer = (steer_seq[:, 1:] - steer_seq[:, :-1]) / self.dt  # [K, T-1], rate [rad/s]
 
-        control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0],1) + self.weight.q_u_steering * torch.sum(actions[:,:,1],1) + rate_cost
+
+        throttle_seq = actions[:, :, 0]
+        # dthrottle = (throttle_seq[:, 1:] - throttle_seq[:, :-1]) / self.dt
+
+        # rate_cost = self.weight.q_du_steer * torch.sum(dsteer ** 2, dim=1) + self.weight.q_du_throttle * torch.sum(dthrottle ** 2, dim=1)  # [K]
+
+        control_cost = self.weight.q_du_throttle * torch.sum(actions[:,:,0] ** 2,1) + self.weight.q_du_steering * torch.sum(actions[:,:,1] ** 2,1) # + rate_cost
 
         half_w = self.lane_width * 0.5
         excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
@@ -286,6 +321,12 @@ class ROSObjective:
 
             terminal_cost += c_opponent_T
 
+        # if self.troubleshoot == 1:
+        #     writer.writerow(["mean sampled steering",torch.mean(actions[:,:,1]).item(),"mean sampled throttle", torch.mean(actions[:, :, 0]).item()])
+
+            # rospy.loginfo(f"mean sampled steering: {torch.mean(actions[:,:,1])}")
+            # rospy.loginfo(f"mean sampled throttle: {torch.mean(actions[:, :, 0])}")
+
         return terminal_cost
 
     def compute_running_cost(self, state: torch.Tensor):
@@ -296,6 +337,8 @@ class ROSObjective:
         # unpack
         x, y, yaw, vx, vy, omega = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4], state[:, 5]
         ref_x, ref_y, ref_yaw, V_target = self.get_current_goal()  # each a scalar tensor
+
+
 
         # errors
         dx = x - ref_x
@@ -319,6 +362,13 @@ class ROSObjective:
 
         c_lane = torch.clamp(self.weight.w_lane * self._softplus_hinge(excess), 0, 300)
         cost = cost + c_lane
+
+        throttle = state[:,6]
+        steering = state[:,7]
+
+        control_cost = self.weight.q_u_throttle * throttle ** 2 + self.weight.q_u_steering * steering ** 2
+
+        cost = cost + control_cost
 
         if self.use_obstacle:
             c_opponent = self._obstacle_cost(x, y)
@@ -506,12 +556,14 @@ def reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=1, *,
 
 def publish_meta():
     meta = {
-        "mppi_model": dynamics.__class__.__name__,
+        "mppi_model": base_dynamics.__class__.__name__,
         "sim_model": model_choice,
         "track_choice": track_choice,
         "dt": CONFIG["dt"],
         "mppi": CONFIG["mppi"],
         "V_target": obj.V_target,
+        "vel_mode": CONFIG["vel_mode"],
+        "obstacle": CONFIG["use_obstacle"],
     }
     meta_pub.publish(json.dumps(meta))
 
@@ -522,7 +574,71 @@ def kill_rosbag(name):
     except Exception as e:
         rospy.logerr("Failed to kill %s: %s", name, e)
 
+rviz_controls_pub = rospy.Publisher(
+            f"/rviz_controls_1",
+            MarkerArray,
+            queue_size=1
+        )
+
+def publish_path(U: np.array, sim):
+    """
+    Visualize the full MPPI-mean control sequence by rolling out
+    through the dynamics.step dynamics.
+
+    U: shape (T,2) array of [throttle, steering].
+    Requires self.dynamics(state, action, t) → (next_state, _).
+    """
+    # 1) Setup MarkerArray
+    ma = MarkerArray()
+    now = rospy.Time.now()
+    clear = Marker()
+    clear.action = Marker.DELETEALL
+    ma.markers.append(clear)
+
+    state = sim.get_current_state("cpu")
+    # rospy.loginfo(f"[MPPI] initial state: {state} used for publish path")
+    T = U.shape[0]
+
+    pts = []
+    p = Point(x=state[0, 0].item(), y=state[0, 1].item(), z=0.0)
+    pts.append(p)
+    states = []
+    for t in range(T):
+        state, _ = sim.vizdynamics.step(state, torch.tensor([[U[t, 0], U[t, 1]]], dtype=torch.float32), t)
+        x = state[0, 0].item()
+        y = state[0, 1].item()
+        p = Point(x=x, y=y, z=0.0)
+        pts.append(p)
+        states.append(state)
+
+    # rospy.loginfo(f"[MPPI] action: {U}")
+    # rospy.loginfo(f"[MPPI] algorithm expected states: {states}")
+    m = Marker()
+    m.header.frame_id = "map"
+    m.header.stamp = now
+    m.ns = f"control_path_1"
+    m.id = 0
+    m.type = Marker.LINE_STRIP
+    m.action = Marker.ADD
+
+    # visual style
+    m.scale.x = 0.02  # line width
+    m.color.r = 1.0
+    m.color.g = 0.5
+    m.color.b = 0.0
+    m.color.a = 1.0  # fully opaque
+
+    m.points = pts
+    ma.markers.append(m)
+
+    # 3) publish
+    rviz_controls_pub.publish(ma)
+
+    return states
+
 if __name__ == "__main__":
+
+    # safety_value = rospy.Publisher('safety_value', Float32)
 
     dist = StateDisturber()
 
@@ -550,14 +666,33 @@ if __name__ == "__main__":
         model_choice = 4
 
     # 2) Create ROS “simulator”
-    sim = SimulatorROS(car_number)
+    sim = SimulatorROS(car_number, 1)
 
     if CONFIG["mppi_model"] == "kinematic":
-        dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+        base_dynamics = Kinematic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
     elif CONFIG["mppi_model"] == "dynamic":
-        dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
+        base_dynamics = Dynamic_Bicycle(dt=CONFIG["dt"], device=CONFIG["device"])
     elif CONFIG["mppi_model"] == "SVGP":
-        dynamics = SVGP(dt=CONFIG["dt"], device=CONFIG["device"])
+        base_dynamics = SVGP(dt=CONFIG["dt"], device=CONFIG["device"])
+    else:
+        raise ValueError("Unknown mppi_model in config")
+
+    th_min = CONFIG["throttle_min"]
+    th_max = CONFIG["throttle_max"]
+    steer_min = CONFIG["steering_min"]
+    steer_max = CONFIG["steering_max"]
+
+
+
+    dynamics = RateAugmentedDynamics(
+        base_dyn=base_dynamics,
+        dt=CONFIG["dt"],
+        th_min=th_min,
+        th_max=th_max,
+        steer_min=steer_min,
+        steer_max=steer_max,
+        device=CONFIG["device"],
+    )
 
     track_choice = CONFIG["track"]
 
@@ -570,31 +705,46 @@ if __name__ == "__main__":
     sim.vizdynamics = dynamics
     sim.vel_mode = CONFIG["vel_mode"]
 
+    if CONFIG["troubleshoot"] == 1:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        outfile = rospy.get_param("~outfile",
+                                  f"/home/maarten/Documents/Thesis/log_Dart/troubleshoot/1dart_log_car{car_number}_{timestamp}.csv")
+        csvfile = open(outfile, "w", newline="")
+        writer = csv.writer(csvfile)
 
     # 3) Objective
-    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG["use_obstacle"], device=CONFIG["device"])
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG["use_obstacle"], CONFIG["troubleshoot"], device=CONFIG["device"])
 
     global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path, obj.s_vals_global_path)
 
     # 4) Planner
     planner = MPPIPlanner(
         cfg=cfg,
-        nx=6,
+        nx=8,  # 6
         dynamics=dynamics.step,
         running_cost=obj.compute_running_cost,
     )
 
     planner.terminal_state_cost = obj.terminal_costs
 
+
+    # mppi_plotter = OnlineMppiPlotter(max_history=200)
+    step_idx = 0
+
     rate = rospy.Rate(1/CONFIG["dt"])
+
+    # rate = rospy.Rate(1/0.1)
 
     counter = 0
     global_path_message_rate = 5  # publish 1 every 5 control loops
 
     # Reset the simulator
-    dr_client = Client("/dart_simulator_node", timeout=2.0)
+    if CONFIG["env"] == "sim":
+        dr_client = Client("/dart_simulator_node", timeout=2.0)
+        reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=model_choice)
 
-    reset_sim(x=-1.5, y=-2.2, theta=0.0, model_choice=model_choice)
+
     publish_meta()
     stopped = False
 
@@ -606,11 +756,18 @@ if __name__ == "__main__":
     # except Exception as e:
     #     print("[compile] disabled:", e)
 
+    last_throttle = 0.0
+    last_steer = 0.0
+    dt = CONFIG["dt"]
+    first = 1
     while not rospy.is_shutdown():
-
         # making sure that while waiting the actions are zero
         # sim.send_control(torch.tensor([0.0, 0.0]))
-        # input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
+        # if first == 0:
+        #     input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
+        # else:
+        #     first = 0
+        # rospy.loginfo("Starting next MPPI iteration...")
 
         state = sim.get_current_state(dynamics._device)
 
@@ -618,54 +775,88 @@ if __name__ == "__main__":
             state_est = dist.disturb(state)
         else:
             state_est = state
-
-
+        # rospy.loginfo(f"[MPPI] x: {state_est[0,0].item()}, y: {state_est[0,1].item()}, yaw: {state_est[0,2].item()}, vx: {state_est[0,3].item()}, vy: {state_est[0,4].item()}, omega: {state_est[0,5].item()}")
         obj.current_state = state_est  # update the current state in the objective, which updates the goal
         obj.counter = 0
         obj.obstacle_Q, obj.obstacle_c = sim.get_obstacle()
 
         if state is None:
-            rospy.loginfo("Waiting for first /vicon/jetracer1 message…")
+            rospy.loginfo(f"Waiting for first /vicon/jetracer{car_number} message…")
             rate.sleep()
             continue
+
+        th_tensor = torch.tensor([[last_throttle]], dtype=state_est.dtype, device=state_est.device)
+        st_tensor = torch.tensor([[last_steer]], dtype=state_est.dtype, device=state_est.device)
+        state_control = torch.cat([state_est, th_tensor, st_tensor], dim=1)
 
         start_time = time.time()
         with torch.inference_mode(): # don't need to keep track of the gradients
             # 5) Compute MPPI action
-            action = planner.command(state_est)
+            # action = planner.command(state_est)
 
-        elapsed_time = time.time() - start_time
-        if elapsed_time > CONFIG["dt"]:
+            action_rate = planner.command(state_control)
 
-            print(f"MPPI computation time: {elapsed_time:.4f} seconds")
-
-        if elapsed_time > 0.2:
-            print("sending 0 as input due to high computation time (0.2 seconds)")
-            sim.send_control(torch.tensor([0.0, 0.0]))
-
-        else:
-            # 6) Send to vehicle
-            sim.send_control(action[0])
+            # rospy.loginfo(f"action:{action[0]}")
 
         if CONFIG["viz_rollouts"] == 1:
             # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
             rollouts = planner.states.detach()
             # publish them
             sim.publish_rollouts(rollouts)
+        #
+
+        dth = np.clip(action_rate[0,0].item(), th_min, th_max)
+        dst = np.clip(action_rate[0,1].item(), steer_min, steer_max)
 
 
-        # print(f"Elapsed MPPI computation time: {elapsed_time}")
-        comptime_publisher.publish(elapsed_time)
+
+        last_throttle = np.clip(last_throttle + dth * dt, th_min, th_max)
+        last_steer = np.clip(last_steer + dst * dt, steer_min, steer_max)
+
+        # sim.send_control(torch.tensor([last_throttle, last_steer], dtype=torch.float32))
+
+        # sim.send_control(torch.tensor([last_throttle, dst], dtype=torch.float32))
+
+        sim.send_control(torch.tensor([dth, dst], dtype=torch.float32))
 
         action_msg = Float32MultiArray()
-        action_msg.data = action.reshape(-1).tolist() # list(action.to(torch.float32))
+        action_msg.data = action_rate.reshape(-1).tolist() # list(action.to(torch.float32))
+
+
+        # safety_value.publish(1.0)
         action_publisher.publish(action_msg)
 
-        # publish entire control input
-        T = CONFIG["mppi"]["horizon"]
-        NU = 2
-        disp_action = np.array(action_msg.data, dtype=np.float32).reshape(T, NU)
-        sim.publish_path(action.detach())
+
+
+        # troubleshoot_states = publish_path(action.detach(), sim)
+        # if CONFIG["troubleshoot"] == 1:
+        #     writer.writerow(["current state (estimate)", state_est, "planned throttle", action[:,0], "planned steering", action[:,1], "planned/expected states", troubleshoot_states])
+        #     # writer.writerow([])
+        #     # writer.writerow(planner.actions.detach())
+        #
+        #     csvfile.flush()
+
+
+
+
+
+        elapsed_time = time.time() - start_time
+        if elapsed_time > CONFIG["dt"]:
+
+            rospy.loginfo(f"MPPI computation time: {elapsed_time:.4f} seconds")
+
+        # if elapsed_time > 0.2:
+        #     rospy.loginfo("sending 0 as input due to high computation time (0.2 seconds)")
+        #     sim.send_control(torch.tensor([0.0, 0.0]))
+
+        # else:
+        #     # 6) Send to vehicle
+        #     sim.send_control(action[0])
+        # rospy.loginfo(f"[MPPI] current state: {state_est}")
+        # rospy.loginfo(f"[MPPI] throttle: {action[:,0]}, steering: {action[:,1]}")
+
+
+        # sim.publish_path(action.detach())
 
         # this is just to republish global path message every now and then
         if counter > global_path_message_rate:
@@ -674,6 +865,130 @@ if __name__ == "__main__":
 
         # update counter
         counter = counter + 1
+
+        elapsed_time = time.time() - start_time
+        comptime_publisher.publish(elapsed_time)
+        # print(f"Elapsed MPPI computation time: {elapsed_time}")
+        #
+        # plt.figure()
+        # for k in range(min(200, planner.perturbed_action.shape[0])):  # limit to avoid clutter
+        #     plt.plot(planner.perturbed_action[k, :, 0].cpu(), color='gray', alpha=0.25)
+        # plt.plot(planner.mean_action[:, 0].cpu(), 'r', linewidth=2, label='Mean action')
+        # plt.plot(planner.best_traj[:, 0].cpu(), 'g--', linewidth=2, label='Best trajectory')
+        # plt.xlabel('Timestep')
+        # plt.ylabel('Throttle Rate')
+        # plt.title('Sampled Throttle Trajectories')
+        # plt.legend()
+        # plt.show()
+        #
+        # plt.figure()
+        # for k in range(min(200, planner.perturbed_action.shape[0])):  # limit to avoid clutter
+        #     plt.plot(planner.perturbed_action[k, :, 1].cpu(), color='gray', alpha=0.25)
+        # plt.plot(planner.mean_action[:, 1].cpu(), 'r', linewidth=2, label='Mean action')
+        # plt.plot(planner.best_traj[:, 1].cpu(), 'g--', linewidth=2, label='Best trajectory')
+        # plt.xlabel('Timestep')
+        # plt.ylabel('Steering Rate')
+        # plt.title('Sampled Steering Trajectories')
+        # plt.legend()
+        # plt.show()
+
+        # --- MPPI online diagnostics / plotting ---
+        # step_idx += 1
+        #
+        # try:
+        #     # 1) executed first command u0 (rate space)
+        #     #    action_rate might be shape (T,2) or (1,2) depending on u_per_command
+        #     if action_rate.ndim == 2:
+        #         u0 = action_rate[0].detach().cpu().numpy()    # first time step
+        #     else:
+        #         u0 = action_rate.detach().cpu().numpy()       # already (2,)
+        #
+        #     # 2) sample cloud for first step
+        #     u0_samples = None
+        #     weights_np = None
+        #     Neff = 0.0
+        #     cost_min = 0.0
+        #
+        #     # Only proceed if MPPI has done a rollout
+        #     if hasattr(planner, "perturbed_action") and planner.perturbed_action is not None:
+        #         # K x T x nu
+        #         pa = planner.perturbed_action
+        #         if pa.ndim == 3 and pa.shape[1] > 0:
+        #             u0_samples = pa[:, 0, :].detach().cpu().numpy()   # K x nu
+        #
+        #             # cost_min from cost_total (exists in both modes)
+        #             if hasattr(planner, "cost_total") and planner.cost_total is not None:
+        #                 cost_min = float(torch.min(planner.cost_total).item())
+        #
+        #             # 3) weights
+        #             if planner.mppi_mode == "simple":
+        #                 # weights already normalised in planner.omega
+        #                 if hasattr(planner, "omega") and planner.omega is not None:
+        #                     w = planner.omega.detach()
+        #                     w = w / torch.sum(w)
+        #                 else:
+        #                     w = None
+        #             else:
+        #                 # halton-spline: reconstruct from total_costs and beta
+        #                 if hasattr(planner, "total_costs") and planner.total_costs is not None:
+        #                     total_costs = planner.total_costs.detach()
+        #                     beta = planner.beta
+        #                     w = torch.exp((-1.0 / beta) * total_costs)
+        #                     w = w / torch.sum(w)
+        #                 else:
+        #                     w = None
+        #
+        #             if w is not None:
+        #                 weights_np = w.cpu().numpy()
+        #                 # Optional subsampling for huge K
+        #                 K = u0_samples.shape[0]
+        #                 if K > 2000:
+        #                     N_top = 100
+        #                     M_rand = 300
+        #
+        #                     # For halton we have total_costs; for simple we only have cost_total
+        #                     if hasattr(planner, "total_costs") and planner.total_costs is not None:
+        #                         costs_for_sort = planner.total_costs.detach()
+        #                     else:
+        #                         costs_for_sort = planner.cost_total.detach()
+        #
+        #                     _, top_idx = torch.topk(-costs_for_sort, N_top)  # lowest cost
+        #                     top_idx = top_idx.cpu().numpy()
+        #
+        #                     all_idx = np.arange(K)
+        #                     mask = np.ones(K, dtype=bool)
+        #                     mask[top_idx] = False
+        #                     rest_idx = all_idx[mask]
+        #                     if rest_idx.size > 0:
+        #                         M_rand = min(M_rand, rest_idx.size)
+        #                         rand_idx = np.random.choice(rest_idx, size=M_rand, replace=False)
+        #                         sel_idx = np.concatenate([top_idx, rand_idx])
+        #                     else:
+        #                         sel_idx = top_idx
+        #
+        #                     u0_samples = u0_samples[sel_idx]
+        #                     weights_np = weights_np[sel_idx]
+        #
+        #                 # Effective sample size
+        #                 Neff = float(1.0 / np.sum(weights_np**2))
+        #
+        #     # 4) update plot if we have something
+        #     if mppi_plotter is not None and u0_samples is not None and weights_np is not None:
+        #         mppi_plotter.update(
+        #             u0=u0,
+        #             Neff=Neff,
+        #             cost_min=cost_min,
+        #             u0_samples=u0_samples,
+        #             weights=weights_np,
+        #             t=step_idx,
+        #         )
+        #
+        #     if step_idx % 20 == 0:
+        #         input("Paused — press Enter...")
+        #
+        # except Exception as e:
+        #     rospy.logwarn(f"[MPPI online plot] error: {e}")
+
 
         rate.sleep()
 

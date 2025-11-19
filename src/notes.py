@@ -93,9 +93,14 @@ class SimulatorROS:
         self.past_yaw_vicon = np.zeros(5)
         self.past_time_vicon= np.zeros(5)
 
+
         self.vx_publisher = rospy.Publisher(f"/vx_est_{car_number}", Float32, queue_size=1)
         self.vy_publisher = rospy.Publisher(f"/vy_est_{car_number}", Float32, queue_size=1)
         self.w_publisher  = rospy.Publisher(f"/omega_est_{car_number}",   Float32, queue_size=1)
+
+        self.vx_error = 0.0
+        self.vy_error = 0.0
+        self.omega_error = 0.0
 
         # # extra publishers for direct comparison
         # self.vx_publisher_fd = rospy.Publisher("vx_est_fd", Float32, queue_size=1)
@@ -154,22 +159,22 @@ class SimulatorROS:
             # Extract yaw from the quaternion
             q = msg.pose.pose.orientation
             yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
-
-            self.past_x_vicon[:-1] = self.past_x_vicon[1:]
-            self.past_y_vicon[:-1] = self.past_y_vicon[1:]
-            self.past_yaw_vicon[:-1] = self.past_yaw_vicon[1:]
-            self.past_time_vicon[:-1] = self.past_time_vicon[1:]
-
-            # append newest
-            self.past_x_vicon[-1] = pos.x
-            self.past_y_vicon[-1] = pos.y
-            self.past_yaw_vicon[-1] = yaw
-            self.past_time_vicon[-1] = msg.header.stamp.to_sec()
-
+            #
+            # self.past_x_vicon[:-1] = self.past_x_vicon[1:]
+            # self.past_y_vicon[:-1] = self.past_y_vicon[1:]
+            # self.past_yaw_vicon[:-1] = self.past_yaw_vicon[1:]
+            # self.past_time_vicon[:-1] = self.past_time_vicon[1:]
+            #
+            # # append newest
+            # self.past_x_vicon[-1] = pos.x
+            # self.past_y_vicon[-1] = pos.y
+            # self.past_yaw_vicon[-1] = yaw
+            # self.past_time_vicon[-1] = msg.header.stamp.to_sec()
+            #
             self.x = pos.x
             self.y = pos.y
             self.yaw = yaw
-
+            #
             # # rospy.loginfo(f"[MPPI vel est] x: {pos.x}, y: {pos.y}, yaw: {yaw}, time: {msg.header.stamp.to_sec()}")
             # # ----- FD (end-point) -----
             # dt_fd = (self.past_time_vicon[-1] - self.past_time_vicon[0])
@@ -185,47 +190,11 @@ class SimulatorROS:
             #         delta_yaw -= 2 * np.pi
             #     elif delta_yaw < -np.pi:
             #         delta_yaw += 2 * np.pi
-            #     omega_fd = delta_yaw / dt_fd
+            #     self.omega = delta_yaw / dt_fd
             #
             # # rotate FD using current yaw (your original behaviour)
-            # vx_fd = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
-            # vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
-
-            # ----- LS (Method A) -----
-            yaw_unwrapped = np.unwrap(self.past_yaw_vicon)
-            t0 = self.past_time_vicon.mean()
-            tt = self.past_time_vicon - t0
-            denom = float((tt * tt).sum())
-
-            if denom <= 1e-9:
-                vx_abs_ls, vy_abs_ls, omega_ls = 0.0, 0.0, 0.0
-            else:
-                def slope(arr):
-                    return float(((arr - arr.mean()) * tt).sum() / denom)
-
-                vx_abs_ls = slope(self.past_x_vicon)
-                vy_abs_ls = slope(self.past_y_vicon)
-                omega_ls = slope(yaw_unwrapped)
-
-            # use mean yaw over window for LS rotation
-            yaw_avg = np.arctan2(np.sin(self.past_yaw_vicon).mean(),
-                                 np.cos(self.past_yaw_vicon).mean())
-            c, s = np.cos(yaw_avg), np.sin(yaw_avg)
-            vx_ls = c * vx_abs_ls + s * vy_abs_ls
-            vy_ls = -s * vx_abs_ls + c * vy_abs_ls
-
-            # # publish for comparison
-            # self.vx_publisher_fd.publish(Float32(vx_fd))
-            # self.vy_publisher_fd.publish(Float32(vy_fd))
-            # self.w_publisher_fd.publish(Float32(omega_fd))
-            #
-            # self.vx_publisher_ls.publish(Float32(vx_ls))
-            # self.vy_publisher_ls.publish(Float32(vy_ls))
-            # self.w_publisher_ls.publish(Float32(omega_ls))
-
-            self.vx = vx_ls
-            self.vy = vy_ls
-            self.omega = omega_ls
+            # self.vx = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
+            # self.vy = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
 
     def _vx_cb(self, msg):
         self._vx = msg.data
@@ -307,27 +276,27 @@ class SimulatorROS:
 
     def vicon_pos_2_vel(self, x, y, yaw, time, stamp):
         # shift ring buffers
-        self.past_x_vicon_old[:-1] = self.past_x_vicon_old[1:]
-        self.past_y_vicon_old[:-1] = self.past_y_vicon_old[1:]
-        self.past_yaw_vicon_old[:-1] = self.past_yaw_vicon_old[1:]
-        self.past_time_vicon_old[:-1] = self.past_time_vicon_old[1:]
+        self.past_x_vicon[:-1] = self.past_x_vicon[1:]
+        self.past_y_vicon[:-1] = self.past_y_vicon[1:]
+        self.past_yaw_vicon[:-1] = self.past_yaw_vicon[1:]
+        self.past_time_vicon[:-1] = self.past_time_vicon[1:]
 
         # append newest
-        self.past_x_vicon_old[-1] = x
-        self.past_y_vicon_old[-1] = y
-        self.past_yaw_vicon_old[-1] = yaw
-        self.past_time_vicon_old[-1] = time
+        self.past_x_vicon[-1] = x
+        self.past_y_vicon[-1] = y
+        self.past_yaw_vicon[-1] = yaw
+        self.past_time_vicon[-1] = time
 
         # ----- FD (end-point) -----
-        dt_fd = (self.past_time_vicon_old[-1] - self.past_time_vicon_old[0])
+        dt_fd = (self.past_time_vicon[-1] - self.past_time_vicon[0])
         if dt_fd <= 1e-9:
             vx_abs_fd, vy_abs_fd, omega_fd = 0.0, 0.0, 0.0
         else:
-            vx_abs_fd = (self.past_x_vicon_old[-1] - self.past_x_vicon_old[0]) / dt_fd
-            vy_abs_fd = (self.past_y_vicon_old[-1] - self.past_y_vicon_old[0]) / dt_fd
+            vx_abs_fd = (self.past_x_vicon[-1] - self.past_x_vicon[0]) / dt_fd
+            vy_abs_fd = (self.past_y_vicon[-1] - self.past_y_vicon[0]) / dt_fd
 
             # unwrap only for FD omega across the window:
-            delta_yaw = self.past_yaw_vicon_old[-1] - self.past_yaw_vicon_old[0]
+            delta_yaw = self.past_yaw_vicon[-1] - self.past_yaw_vicon[0]
             if delta_yaw > np.pi:
                 delta_yaw -= 2 * np.pi
             elif delta_yaw < -np.pi:
@@ -339,9 +308,9 @@ class SimulatorROS:
         vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
 
         # ----- LS (Method A) -----
-        yaw_unwrapped = np.unwrap(self.past_yaw_vicon_old)
-        t0 = self.past_time_vicon_old.mean()
-        tt = self.past_time_vicon_old - t0
+        yaw_unwrapped = np.unwrap(self.past_yaw_vicon)
+        t0 = self.past_time_vicon.mean()
+        tt = self.past_time_vicon - t0
         denom = float((tt * tt).sum())
 
         if denom <= 1e-9:
@@ -350,13 +319,13 @@ class SimulatorROS:
             def slope(arr):
                 return float(((arr - arr.mean()) * tt).sum() / denom)
 
-            vx_abs_ls = slope(self.past_x_vicon_old)
-            vy_abs_ls = slope(self.past_y_vicon_old)
+            vx_abs_ls = slope(self.past_x_vicon)
+            vy_abs_ls = slope(self.past_y_vicon)
             omega_ls = slope(yaw_unwrapped)
 
         # use mean yaw over window for LS rotation
-        yaw_avg = np.arctan2(np.sin(self.past_yaw_vicon_old).mean(),
-                             np.cos(self.past_yaw_vicon_old).mean())
+        yaw_avg = np.arctan2(np.sin(self.past_yaw_vicon).mean(),
+                             np.cos(self.past_yaw_vicon).mean())
         c, s = np.cos(yaw_avg), np.sin(yaw_avg)
         vx_ls = c * vx_abs_ls + s * vy_abs_ls
         vy_ls = -s * vx_abs_ls + c * vy_abs_ls
@@ -384,9 +353,40 @@ class SimulatorROS:
         Returns a torch.Tensor of shape [1,3] = [x, y, yaw],
         or None if we haven't received a pose yet.
         """
+        with self._lock:
+            msg = self._latest_msg
+        if msg is None:
+            return None
+
+        # Extract position
+        pos = msg.pose.pose.position
+        # Extract yaw from the quaternion
+        q = msg.pose.pose.orientation
+        yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
+
+        # vx = self._vx
+        # vy = self._vy
+        # omega = self._omega
+
+        self.vx, self.vy , self.omega = self.vicon_pos_2_vel(pos.x, pos.y, yaw, msg.header.stamp.to_sec(), msg.header.stamp)
+        # self.vx, self.vy , self.omega = self.vicon_pos_2_vel(self.x, self.y, self.yaw, self._latest_msg.header.stamp.to_sec(), self._latest_msg.header.stamp)
+
         self.vx_publisher.publish(Float32(self.vx))
         self.vy_publisher.publish(Float32(self.vy))
         self.w_publisher.publish(Float32(self.omega))
+
+        # if abs(self._vx - vx) > self.vx_error:
+        #     print(f"max vx error: {self._vx - vx}")
+        #     self.vx_error = abs(self._vx - vx)
+        #
+        # if abs(self._vy - vy) > self.vy_error:
+        #     print(f"vy error: {self._vy - vy}")
+        #     self.vy_error = abs(self._vy - vy)
+        #
+        # if abs(self._omega - omega) > self.omega_error:
+        #     print(f"omega error: {self._omega - omega}")
+        #     self.omega_error = abs(self._omega - omega)
+
         # Build a 1×6 tensor: [x, y, yaw, vx, vy, omega]
         state = torch.tensor([[self.x, self.y, self.yaw, self.vx, self.vy, self.omega]], dtype=torch.float32, device=device)
         return state

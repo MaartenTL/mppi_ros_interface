@@ -3,7 +3,7 @@ import rospy, csv, os
 from std_msgs.msg import Float32
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # headless
+matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
 import argparse
 from datetime import datetime
@@ -21,7 +21,7 @@ class Recorder:
             'vx_gt': None, 'vy_gt': None, 'w_gt': None,
             'vx_fd': None, 'vy_fd': None, 'w_fd': None,
             'vx_ls': None, 'vy_ls': None, 'w_ls': None,
-            'vx_ab': None, 'vy_ab': None, 'w_ab': None,
+            'vx_ls_old': None, 'vy_ls_old': None, 'w_ls_old': None,
         }
 
         # subscribe GT
@@ -37,9 +37,9 @@ class Recorder:
         rospy.Subscriber("vy_est_ls", Float32, self._mkcb('vy_ls'))
         rospy.Subscriber("omega_est_ls", Float32, self._mkcb('w_ls'))
         # AB
-        rospy.Subscriber("vx_est_ab", Float32, self._mkcb('vx_ab'))
-        rospy.Subscriber("vy_est_ab", Float32, self._mkcb('vy_ab'))
-        rospy.Subscriber("omega_est_ab", Float32, self._mkcb('w_ab'))
+        rospy.Subscriber(f"vx_est_{car}", Float32, self._mkcb('vx_ls_old'))
+        rospy.Subscriber(f"vy_est_{car}", Float32, self._mkcb('vy_ls_old'))
+        rospy.Subscriber(f"omega_est_{car}", Float32, self._mkcb('w_ls_old'))
 
     def _mkcb(self, key):
         def _cb(msg):
@@ -52,7 +52,7 @@ class Recorder:
                 'vx_gt': self.last['vx_gt'], 'vy_gt': self.last['vy_gt'], 'w_gt': self.last['w_gt'],
                 'vx_fd': self.last['vx_fd'], 'vy_fd': self.last['vy_fd'], 'w_fd': self.last['w_fd'],
                 'vx_ls': self.last['vx_ls'], 'vy_ls': self.last['vy_ls'], 'w_ls': self.last['w_ls'],
-                'vx_ab': self.last['vx_ab'], 'vy_ab': self.last['vy_ab'], 'w_ab': self.last['w_ab'],
+                'vx_ls_old': self.last['vx_ls_old'], 'vy_ls_old': self.last['vy_ls_old'], 'w_ls_old': self.last['w_ls_old'],
             })
         return _cb
 
@@ -81,26 +81,26 @@ class Recorder:
             gt = col(f"{sig}_gt")
             fd = col(f"{sig}_fd")
             ls = col(f"{sig}_ls")
-            ab = col(f"{sig}_ab")
+            ls_old = col(f"{sig}_ls_old")
 
             plt.figure(figsize=(10,4))
             plt.plot(T, gt, label=f"{sig} GT")
             plt.plot(T, fd, label=f"{sig} FD", alpha=0.9)
             plt.plot(T, ls, label=f"{sig} LS", alpha=0.9)
-            plt.plot(T, ab, label=f"{sig} AB", alpha=0.9)
+            plt.plot(T, ls_old, label=f"{sig} LS OLD", alpha =0.9)
             plt.xlabel("time [s]"); plt.ylabel(ylabel); plt.title(f"{sig} comparison")
             plt.legend(); plt.tight_layout()
             out = os.path.join(self.outdir, f"{sig}_compare_car{self.car}_{stamp}.png")
-            plt.savefig(out, dpi=150); plt.close()
+            plt.savefig(out, dpi=150)
             rospy.loginfo(f"Wrote plot: {out}")
-
+            plt.show()
             # RMSEs (ignore NaNs)
             def rmse(a,b):
                 m = np.isfinite(a) & np.isfinite(b)
                 if m.sum() < 5: return np.nan
                 return np.sqrt(np.mean((a[m]-b[m])**2))
-            rospy.loginfo("RMSE vs GT | %s: FD=%.4f  LS=%.4f  AB=%.4f",
-                          sig, rmse(gt,fd), rmse(gt,ls), rmse(gt,ab))
+            rospy.loginfo("RMSE vs GT | %s: FD=%.4f  LS=%.4f LS_OLD=%.4f",
+                          sig, rmse(gt,fd), rmse(gt,ls), rmse(gt,ls_old))
 
         plot_one('vx', 'm/s')
         plot_one('vy', 'm/s')
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     rospy.init_node("record_vel_compare", anonymous=True)
     ap = argparse.ArgumentParser()
     ap.add_argument("--car", type=int, default=1)
-    ap.add_argument("--outdir", type=str, default="/tmp/vel_compare")
+    ap.add_argument("--outdir", type=str, default="/home/maarten/Documents/Thesis/log_Dart/vel_compare")
     args, _ = ap.parse_known_args()
 
     rec = Recorder(args.car, args.outdir)
@@ -119,3 +119,4 @@ if __name__ == "__main__":
         rospy.spin()
     finally:
         rec.save()
+        plt.show()
