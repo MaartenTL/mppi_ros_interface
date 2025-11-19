@@ -201,7 +201,7 @@ class MPPIPlanner(ABC):
         self.cov_action = torch.diagonal(self.noise_sigma, 0)
         self.scale_tril = torch.sqrt(self.cov_action)
         self.squash_fn = 'clamp'
-        self.step_size_mean = 0.3 # 1. # 0.3 # 0.98     # From storm
+        self.step_size_mean = 1.0 # 1.0 # 0.3 # 0.98     # From storm
 
         # Discount
         self.gamma = cfg.rollout_var_discount 
@@ -535,6 +535,10 @@ class MPPIPlanner(ABC):
         elif self.delta == None and self.sample_method == 'halton':
             self.delta = self.get_samples(self.K, base_seed=0)
             #add zero-noise seq so mean is always a part of samples
+
+
+        # IMPLEMENT FIRST ORDER FILTER HERE IF WANTED FOR ACTUATOR DYNAMICS
+
 
         # Add zero-noise seq so mean is always a part of samples
         if self.sample_previous_plan:
