@@ -1,0 +1,44 @@
+<launch>
+    <!-- MPPI ROS Node -->
+    <node pkg="mppi_ros_interface"
+          type="run_mppi_ros.py"
+          name="mppi_ros"
+          output="screen"
+          cwd="node"/>
+
+    <!-- Logger Node -->
+    <node pkg="mppi_ros_interface"
+          type="logger_node.py"
+          name="mppi_logger"
+          output="screen"
+          cwd="node"/>
+
+         <!-- Logger Node -->
+    <node pkg="mppi_ros_interface"
+          type="logger_sim_node.py"
+          name="mppi_logger_sim"
+          output="screen"
+          cwd="node"/>
+
+    <node pkg="curvature_aware_mpcc_pkg" type="mpc_node.py" name="mpc_node" output="screen"
+       />
+    <node pkg="rqt_reconfigure" type="rqt_reconfigure" name="rqt_reconfigure"
+       />
+
+    <node pkg="mppi_ros_interface" type="safety_toggle.py" name="Safety_node"
+       />
+
+
+         <!-- Rosbag settings -->
+  <arg name="outdir" default="$(env HOME)/Documents/Thesis/log_Dart/ROSbag" />
+  <arg name="prefix" default="run_" />
+  <arg name="topics" default="/mppi/action /mppi/cost /pose /vx_1 /vy_1 /tf /tf_static /clock /comptime_1" />
+
+  <!-- Delay recorder start by ~2s so MPPI is up -->
+  <node pkg="rosbag"
+        type="record"
+        name="bag_recorder"
+        output="screen"
+        launch-prefix="bash -lc 'sleep 2; exec &quot;$0&quot; &quot;$@&quot;'"
+        args="record --lz4 --split --size=4096 --buffsize=104857600 -o $(arg outdir)/$(arg prefix) $(arg topics)" />
+</launch>
