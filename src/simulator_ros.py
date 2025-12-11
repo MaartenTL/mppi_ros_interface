@@ -4,7 +4,7 @@ import rospy
 import threading
 import torch
 from geometry_msgs.msg import PoseWithCovarianceStamped, Point
-from std_msgs.msg import Float32                # adjust if your control topics use a different type
+from std_msgs.msg import Float32, Float32MultiArray            # adjust if your control topics use a different type
 from tf.transformations import euler_from_quaternion
 from functions_for_controllers import find_s_of_closest_point_on_global_path, produce_track,produce_marker_array_rviz, produce_marker_rviz, steer_angle_2_command
 import numpy as np
@@ -13,28 +13,25 @@ import tf
 import time
 from collections import deque
 
+
 class SimulatorROS:
-    def __init__(self, car_number, alg):
+    def __init__(self, car_number, env):
         # — pose listener —
         self._lock = threading.Lock()
         self._latest_msg = None
-        rospy.Subscriber("/vicon/jetracer"+str(car_number),
-                         PoseWithCovarianceStamped,
-                         self._pose_cb)
+
         self.car_number = car_number
 
         # — control publishers —
-        # self.steer_pub    = rospy.Publisher(f"/steering_{car_number}",
-        #                                     Float32, queue_size=1)
-        # self.throttle_pub = rospy.Publisher(f"/throttle_{car_number}",
-        #                                     Float32, queue_size=1)
-
         self.steer_pub    = rospy.Publisher(f"/steering_{car_number}",
                                             Float32, queue_size=1)
         self.throttle_pub = rospy.Publisher(f"/throttle_{car_number}",
                                             Float32, queue_size=1)
-
-
+        #
+        # self.steer_pub    = rospy.Publisher(f"/steering_sim_{car_number}",
+        #                                     Float32, queue_size=1)
+        # self.throttle_pub = rospy.Publisher(f"/throttle_sim_{car_number}",
+        #                                     Float32, queue_size=1)
 
         self.rviz_global_path_publisher = rospy.Publisher('rviz_global_path_' + str(self.car_number), MarkerArray,
                                                           queue_size=10)
@@ -59,9 +56,7 @@ class SimulatorROS:
         self.omega = 0.0
 
 
-        rospy.Subscriber(f"/vx_{car_number}", Float32, self._vx_cb)
-        rospy.Subscriber(f"/vy_{car_number}", Float32, self._vy_cb)
-        rospy.Subscriber(f"/omega_{car_number}", Float32, self._omega_cb)
+
 
         # Set velocity target
         # self.V_target = 0.5
@@ -93,23 +88,28 @@ class SimulatorROS:
         self.past_yaw_vicon = np.zeros(5)
         self.past_time_vicon= np.zeros(5)
 
-        self.past_x_vicon_old   = np.zeros(5)
-        self.past_y_vicon_old   = np.zeros(5)
-        self.past_yaw_vicon_old = np.zeros(5)
-        self.past_time_vicon_old = np.zeros(5)
+        # self.past_x_vicon_old   = np.zeros(5)
+        # self.past_y_vicon_old   = np.zeros(5)
+        # self.past_yaw_vicon_old = np.zeros(5)
+        # self.past_time_vicon_old = np.zeros(5)
 
-        self.vx_publisher = rospy.Publisher(f"/vx_est_{car_number}", Float32, queue_size=1)
-        self.vy_publisher = rospy.Publisher(f"/vy_est_{car_number}", Float32, queue_size=1)
-        self.w_publisher  = rospy.Publisher(f"/omega_est_{car_number}",   Float32, queue_size=1)
+        if env == "lab":
+            self.vx_publisher = rospy.Publisher(f"/vx_{car_number}", Float32, queue_size=1)
+            self.vy_publisher = rospy.Publisher(f"/vy_{car_number}", Float32, queue_size=1)
+            self.w_publisher  = rospy.Publisher(f"/omega_{car_number}",   Float32, queue_size=1)
+        else:
+            self.vx_publisher = rospy.Publisher(f"/vx_est_{car_number}", Float32, queue_size=1)
+            self.vy_publisher = rospy.Publisher(f"/vy_est_{car_number}", Float32, queue_size=1)
+            self.w_publisher  = rospy.Publisher(f"/omega_est_{car_number}",   Float32, queue_size=1)
 
-        # extra publishers for direct comparison
-        self.vx_publisher_fd = rospy.Publisher("vx_est_fd", Float32, queue_size=1)
-        self.vy_publisher_fd = rospy.Publisher("vy_est_fd", Float32, queue_size=1)
-        self.w_publisher_fd = rospy.Publisher("omega_est_fd", Float32, queue_size=1)
-
-        self.vx_publisher_ls = rospy.Publisher("vx_est_ls", Float32, queue_size=1)
-        self.vy_publisher_ls = rospy.Publisher("vy_est_ls", Float32, queue_size=1)
-        self.w_publisher_ls = rospy.Publisher("omega_est_ls", Float32, queue_size=1)
+        # # extra publishers for direct comparison
+        # self.vx_publisher_fd = rospy.Publisher("vx_est_fd", Float32, queue_size=1)
+        # self.vy_publisher_fd = rospy.Publisher("vy_est_fd", Float32, queue_size=1)
+        # self.w_publisher_fd = rospy.Publisher("omega_est_fd", Float32, queue_size=1)
+        #
+        # self.vx_publisher_ls = rospy.Publisher("vx_est_ls", Float32, queue_size=1)
+        # self.vy_publisher_ls = rospy.Publisher("vy_est_ls", Float32, queue_size=1)
+        # self.w_publisher_ls = rospy.Publisher("omega_est_ls", Float32, queue_size=1)
 
         # --- α–β filter params (tuneable) ---
         self.ab_alpha = rospy.get_param("~ab_alpha", 0.2)  # position gain
@@ -133,7 +133,7 @@ class SimulatorROS:
         # Example: one obstacle placed at a path position (s0) with lateral offset d0 (m)
         # You can also set absolute (cx, cy) below if you prefer.
         self.obst_s0 = 8.0  # metres along global path
-        self.obst_d0 = -0.2  # lateral offset from centreline (+left, -right)
+        self.obst_d0 = -0.5  # lateral offset from centreline (+left, -right)
         self.obst_a, self.obst_b = 0.5, 0.25  # ellipse semi-axes (m): x'-axis=a, y'-axis=b
         self.obst_yaw = 0.0  # orientation of ellipse in world (rad)
 
@@ -146,7 +146,43 @@ class SimulatorROS:
         self.y_vals_global_path = None
         self.s_vals_global_path = None
 
-        self.vel_mode = None
+        self.vel_mode = "ls"
+
+        # ---- dynamic obstacle from MPC (other agent) ----
+        self.agent_center = None   # shape (T, 2) → [x, y]
+        self.agent_yaw    = None   # shape (T,)  → yaw
+
+        rospy.Subscriber(
+            f"/mpc_pred_traj_2",   # must match the topic you publish from MPCC
+            Float32MultiArray,
+            self._mpc_traj_cb
+        )
+
+        rospy.Subscriber("/vicon/jetracer"+str(car_number),
+                         PoseWithCovarianceStamped,
+                         self._pose_cb)
+
+        rospy.Subscriber(f"/vx_{car_number}", Float32, self._vx_cb)
+        rospy.Subscriber(f"/vy_{car_number}", Float32, self._vy_cb)
+        rospy.Subscriber(f"/omega_{car_number}", Float32, self._omega_cb)
+
+    def _mpc_traj_cb(self, msg: Float32MultiArray):
+        """
+        Receive MPC-predicted trajectory of the other agent as
+        [x0, y0, yaw0, x1, y1, yaw1, ..., xT-1, yT-1, yawT-1]
+        and store as numpy arrays.
+        """
+        data = np.asarray(msg.data, dtype=np.float32)
+        if data.size % 3 != 0 or data.size == 0:
+            rospy.logwarn_throttle(1.0, "[SimulatorROS] mpc_pred_traj has wrong length")
+            return
+
+        T = data.size // 3
+        traj = data.reshape(T, 3)
+
+        with self._lock:
+            self.agent_center = traj[:, 0:2].copy()  # (T, 2) → x,y
+            self.agent_yaw    = traj[:, 2].copy()    # (T,)   → yaw
 
 
     def _pose_cb(self, msg):
@@ -250,65 +286,65 @@ class SimulatorROS:
     def _omega_cb(self, msg):
         self._omega = msg.data
 
-    def _ab_update(self, x_meas, y_meas, yaw_meas, t_now):
-        """
-        α–β filter on x(t), y(t), yaw(t) in WORLD frame.
-        Returns body-frame (vx, vy) and omega at time t_now.
-        """
-        alpha, beta = self.ab_alpha, self.ab_beta
-
-        # unwrap yaw measurement consistently
-        if self._ab_yaw_unwrapped is None:
-            yaw_unw = yaw_meas
-        else:
-            # incremental unwrap against last unwrapped
-            dy = yaw_meas - (self._ab_yaw_unwrapped % (2 * np.pi))
-            if dy > np.pi:  dy -= 2 * np.pi
-            if dy < -np.pi:  dy += 2 * np.pi
-            yaw_unw = self._ab_yaw_unwrapped + dy
-
-        # init on first call
-        if self._ab_x is None or self._ab_t_last is None:
-            self._ab_x, self._ab_y = float(x_meas), float(y_meas)
-            self._ab_yaw_unwrapped = float(yaw_unw)
-            self._ab_vx = 0.0;
-            self._ab_vy = 0.0;
-            self._ab_omega = 0.0
-            self._ab_t_last = float(t_now)
-            # return zeros (no estimate yet)
-            return 0.0, 0.0, 0.0
-
-        dt = float(t_now - self._ab_t_last)
-        if dt <= 1e-6 or dt > 0.5:  # guard weird stamps; reset if too large a gap
-            self._ab_t_last = float(t_now)
-            return self._ab_vx, self._ab_vy, self._ab_omega
-
-        # ---- Predict
-        x_pred = self._ab_x + self._ab_vx * dt
-        y_pred = self._ab_y + self._ab_vy * dt
-        yaw_pred = self._ab_yaw_unwrapped + self._ab_omega * dt
-
-        # Residuals
-        rx = float(x_meas) - x_pred
-        ry = float(y_meas) - y_pred
-        ryaw = float(yaw_unw) - yaw_pred
-
-        # ---- Correct
-        self._ab_x = x_pred + alpha * rx
-        self._ab_y = y_pred + alpha * ry
-        self._ab_yaw_unwrapped = yaw_pred + alpha * ryaw
-
-        self._ab_vx = self._ab_vx + (beta / dt) * rx
-        self._ab_vy = self._ab_vy + (beta / dt) * ry
-        self._ab_omega = self._ab_omega + (beta / dt) * ryaw
-
-        self._ab_t_last = float(t_now)
-
-        # rotate to BODY using the current measured yaw (fastest, consistent per tick)
-        c, s = np.cos(yaw_meas), np.sin(yaw_meas)
-        vx_body = c * self._ab_vx + s * self._ab_vy
-        vy_body = -s * self._ab_vx + c * self._ab_vy
-        return vx_body, vy_body, self._ab_omega
+    # def _ab_update(self, x_meas, y_meas, yaw_meas, t_now):
+    #     """
+    #     α–β filter on x(t), y(t), yaw(t) in WORLD frame.
+    #     Returns body-frame (vx, vy) and omega at time t_now.
+    #     """
+    #     alpha, beta = self.ab_alpha, self.ab_beta
+    #
+    #     # unwrap yaw measurement consistently
+    #     if self._ab_yaw_unwrapped is None:
+    #         yaw_unw = yaw_meas
+    #     else:
+    #         # incremental unwrap against last unwrapped
+    #         dy = yaw_meas - (self._ab_yaw_unwrapped % (2 * np.pi))
+    #         if dy > np.pi:  dy -= 2 * np.pi
+    #         if dy < -np.pi:  dy += 2 * np.pi
+    #         yaw_unw = self._ab_yaw_unwrapped + dy
+    #
+    #     # init on first call
+    #     if self._ab_x is None or self._ab_t_last is None:
+    #         self._ab_x, self._ab_y = float(x_meas), float(y_meas)
+    #         self._ab_yaw_unwrapped = float(yaw_unw)
+    #         self._ab_vx = 0.0;
+    #         self._ab_vy = 0.0;
+    #         self._ab_omega = 0.0
+    #         self._ab_t_last = float(t_now)
+    #         # return zeros (no estimate yet)
+    #         return 0.0, 0.0, 0.0
+    #
+    #     dt = float(t_now - self._ab_t_last)
+    #     if dt <= 1e-6 or dt > 0.5:  # guard weird stamps; reset if too large a gap
+    #         self._ab_t_last = float(t_now)
+    #         return self._ab_vx, self._ab_vy, self._ab_omega
+    #
+    #     # ---- Predict
+    #     x_pred = self._ab_x + self._ab_vx * dt
+    #     y_pred = self._ab_y + self._ab_vy * dt
+    #     yaw_pred = self._ab_yaw_unwrapped + self._ab_omega * dt
+    #
+    #     # Residuals
+    #     rx = float(x_meas) - x_pred
+    #     ry = float(y_meas) - y_pred
+    #     ryaw = float(yaw_unw) - yaw_pred
+    #
+    #     # ---- Correct
+    #     self._ab_x = x_pred + alpha * rx
+    #     self._ab_y = y_pred + alpha * ry
+    #     self._ab_yaw_unwrapped = yaw_pred + alpha * ryaw
+    #
+    #     self._ab_vx = self._ab_vx + (beta / dt) * rx
+    #     self._ab_vy = self._ab_vy + (beta / dt) * ry
+    #     self._ab_omega = self._ab_omega + (beta / dt) * ryaw
+    #
+    #     self._ab_t_last = float(t_now)
+    #
+    #     # rotate to BODY using the current measured yaw (fastest, consistent per tick)
+    #     c, s = np.cos(yaw_meas), np.sin(yaw_meas)
+    #     vx_body = c * self._ab_vx + s * self._ab_vy
+    #     vy_body = -s * self._ab_vx + c * self._ab_vy
+    #     return vx_body, vy_body, self._ab_omega
 
     def ls_slope(self, val, tt):
         v0 = val.mean()
@@ -319,79 +355,79 @@ class SimulatorROS:
             return 0.0
         return float((tt * vv).sum() / denom)
 
-    def vicon_pos_2_vel(self, x, y, yaw, time, stamp):
-        # shift ring buffers
-        self.past_x_vicon_old[:-1] = self.past_x_vicon_old[1:]
-        self.past_y_vicon_old[:-1] = self.past_y_vicon_old[1:]
-        self.past_yaw_vicon_old[:-1] = self.past_yaw_vicon_old[1:]
-        self.past_time_vicon_old[:-1] = self.past_time_vicon_old[1:]
-
-        # append newest
-        self.past_x_vicon_old[-1] = x
-        self.past_y_vicon_old[-1] = y
-        self.past_yaw_vicon_old[-1] = yaw
-        self.past_time_vicon_old[-1] = time
-
-        # ----- FD (end-point) -----
-        dt_fd = (self.past_time_vicon_old[-1] - self.past_time_vicon_old[0])
-        if dt_fd <= 1e-9:
-            vx_abs_fd, vy_abs_fd, omega_fd = 0.0, 0.0, 0.0
-        else:
-            vx_abs_fd = (self.past_x_vicon_old[-1] - self.past_x_vicon_old[0]) / dt_fd
-            vy_abs_fd = (self.past_y_vicon_old[-1] - self.past_y_vicon_old[0]) / dt_fd
-
-            # unwrap only for FD omega across the window:
-            delta_yaw = self.past_yaw_vicon_old[-1] - self.past_yaw_vicon_old[0]
-            if delta_yaw > np.pi:
-                delta_yaw -= 2 * np.pi
-            elif delta_yaw < -np.pi:
-                delta_yaw += 2 * np.pi
-            omega_fd = delta_yaw / dt_fd
-
-        # rotate FD using current yaw (your original behaviour)
-        vx_fd = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
-        vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
-
-        # ----- LS (Method A) -----
-        yaw_unwrapped = np.unwrap(self.past_yaw_vicon_old)
-        t0 = self.past_time_vicon_old.mean()
-        tt = self.past_time_vicon_old - t0
-        denom = float((tt * tt).sum())
-
-        if denom <= 1e-9:
-            vx_abs_ls, vy_abs_ls, omega_ls = 0.0, 0.0, 0.0
-        else:
-            def slope(arr):
-                return float(((arr - arr.mean()) * tt).sum() / denom)
-
-            vx_abs_ls = slope(self.past_x_vicon_old)
-            vy_abs_ls = slope(self.past_y_vicon_old)
-            omega_ls = slope(yaw_unwrapped)
-
-        # use mean yaw over window for LS rotation
-        yaw_avg = np.arctan2(np.sin(self.past_yaw_vicon_old).mean(),
-                             np.cos(self.past_yaw_vicon_old).mean())
-        c, s = np.cos(yaw_avg), np.sin(yaw_avg)
-        vx_ls = c * vx_abs_ls + s * vy_abs_ls
-        vy_ls = -s * vx_abs_ls + c * vy_abs_ls
-
-        # # publish for comparison
-        # self.vx_publisher_fd.publish(Float32(vx_fd))
-        # self.vy_publisher_fd.publish(Float32(vy_fd))
-        # self.w_publisher_fd.publish(Float32(omega_fd))
-        #
-        # self.vx_publisher_ls.publish(Float32(vx_ls))
-        # self.vy_publisher_ls.publish(Float32(vy_ls))
-        # self.w_publisher_ls.publish(Float32(omega_ls))
-
-        # keep your original outputs driving MPPI (choose which to return):
-        # return LS to actually test it in control loop, or FD to keep baseline stable.
-        if self.vel_mode == "ls":
-            return vx_ls, vy_ls, omega_ls
-        elif self.vel_mode == "gt":
-            return self._vx, self._vy, self._omega
-        else:
-            return vx_fd, vy_fd, omega_fd
+    # def vicon_pos_2_vel(self, x, y, yaw, time, stamp):
+    #     # shift ring buffers
+    #     self.past_x_vicon_old[:-1] = self.past_x_vicon_old[1:]
+    #     self.past_y_vicon_old[:-1] = self.past_y_vicon_old[1:]
+    #     self.past_yaw_vicon_old[:-1] = self.past_yaw_vicon_old[1:]
+    #     self.past_time_vicon_old[:-1] = self.past_time_vicon_old[1:]
+    #
+    #     # append newest
+    #     self.past_x_vicon_old[-1] = x
+    #     self.past_y_vicon_old[-1] = y
+    #     self.past_yaw_vicon_old[-1] = yaw
+    #     self.past_time_vicon_old[-1] = time
+    #
+    #     # ----- FD (end-point) -----
+    #     dt_fd = (self.past_time_vicon_old[-1] - self.past_time_vicon_old[0])
+    #     if dt_fd <= 1e-9:
+    #         vx_abs_fd, vy_abs_fd, omega_fd = 0.0, 0.0, 0.0
+    #     else:
+    #         vx_abs_fd = (self.past_x_vicon_old[-1] - self.past_x_vicon_old[0]) / dt_fd
+    #         vy_abs_fd = (self.past_y_vicon_old[-1] - self.past_y_vicon_old[0]) / dt_fd
+    #
+    #         # unwrap only for FD omega across the window:
+    #         delta_yaw = self.past_yaw_vicon_old[-1] - self.past_yaw_vicon_old[0]
+    #         if delta_yaw > np.pi:
+    #             delta_yaw -= 2 * np.pi
+    #         elif delta_yaw < -np.pi:
+    #             delta_yaw += 2 * np.pi
+    #         omega_fd = delta_yaw / dt_fd
+    #
+    #     # rotate FD using current yaw (your original behaviour)
+    #     vx_fd = vx_abs_fd * np.cos(yaw) + vy_abs_fd * np.sin(yaw)
+    #     vy_fd = -vx_abs_fd * np.sin(yaw) + vy_abs_fd * np.cos(yaw)
+    #
+    #     # ----- LS (Method A) -----
+    #     yaw_unwrapped = np.unwrap(self.past_yaw_vicon_old)
+    #     t0 = self.past_time_vicon_old.mean()
+    #     tt = self.past_time_vicon_old - t0
+    #     denom = float((tt * tt).sum())
+    #
+    #     if denom <= 1e-9:
+    #         vx_abs_ls, vy_abs_ls, omega_ls = 0.0, 0.0, 0.0
+    #     else:
+    #         def slope(arr):
+    #             return float(((arr - arr.mean()) * tt).sum() / denom)
+    #
+    #         vx_abs_ls = slope(self.past_x_vicon_old)
+    #         vy_abs_ls = slope(self.past_y_vicon_old)
+    #         omega_ls = slope(yaw_unwrapped)
+    #
+    #     # use mean yaw over window for LS rotation
+    #     yaw_avg = np.arctan2(np.sin(self.past_yaw_vicon_old).mean(),
+    #                          np.cos(self.past_yaw_vicon_old).mean())
+    #     c, s = np.cos(yaw_avg), np.sin(yaw_avg)
+    #     vx_ls = c * vx_abs_ls + s * vy_abs_ls
+    #     vy_ls = -s * vx_abs_ls + c * vy_abs_ls
+    #
+    #     # # publish for comparison
+    #     # self.vx_publisher_fd.publish(Float32(vx_fd))
+    #     # self.vy_publisher_fd.publish(Float32(vy_fd))
+    #     # self.w_publisher_fd.publish(Float32(omega_fd))
+    #     #
+    #     # self.vx_publisher_ls.publish(Float32(vx_ls))
+    #     # self.vy_publisher_ls.publish(Float32(vy_ls))
+    #     # self.w_publisher_ls.publish(Float32(omega_ls))
+    #
+    #     # keep your original outputs driving MPPI (choose which to return):
+    #     # return LS to actually test it in control loop, or FD to keep baseline stable.
+    #     if self.vel_mode == "ls":
+    #         return vx_ls, vy_ls, omega_ls
+    #     elif self.vel_mode == "gt":
+    #         return self._vx, self._vy, self._omega
+    #     else:
+    #         return vx_fd, vy_fd, omega_fd
 
     def get_current_state(self, device):
         """
@@ -511,7 +547,7 @@ class SimulatorROS:
 
 
 
-    def publish_path(self, U: np.array, throttle, steer):
+    def publish_path(self, U: np.array):
         """
         Visualize the full MPPI-mean control sequence by rolling out
         through the dynamics.step dynamics.
@@ -529,21 +565,16 @@ class SimulatorROS:
         # 2) Get the full starting state [x,y,yaw,vx,vy,w]
         s0 = self.get_current_state("cpu")  # torch.Tensor [1,5]
 
-
-        th_tensor = torch.tensor([[throttle]], dtype=s0.dtype, device=s0.device)
-        st_tensor = torch.tensor([[steer]], dtype=s0.dtype, device=s0.device)
-        state = torch.cat([s0, th_tensor, st_tensor], dim=1)
-
-        # state = s0
+        state = s0
 
         T = U.shape[0]
         # rospy.loginfo(f"[MPPI Logger] state: {state}")
         pts = []
         p = Point(x = state[0,0].item(), y = state[0,1].item(), z =0.0)
         pts.append(p)
-        self.states = []
+        self.states = [state]
         for t in range(T):
-            state, _ = self.vizdynamics.step(state, torch.tensor([[U[t, 0], U[t, 1]]], dtype=torch.float32), t)
+            state, _ = self.dynamics.step(state, torch.tensor([[U[t, 0], U[t, 1]]], dtype=torch.float32),t)
 
             x = state[0,0].item()
             y = state[0,1].item()
@@ -551,8 +582,6 @@ class SimulatorROS:
             pts.append(p)
             self.states.append(state)
 
-        # rospy.loginfo(f"[MPPI Logger] action: {U}")
-        # rospy.loginfo(f"[MPPI Logger] expected states: {self.states}")
 
         m = Marker()
         m.header.frame_id = "map"
@@ -639,6 +668,9 @@ class SimulatorROS:
         Q = R @ D @ R.T
 
         return Q, c
+
+
+
 
 
 

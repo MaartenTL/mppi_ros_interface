@@ -68,7 +68,7 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     fig = plt.figure()
     plt.plot(df["time"], np.hypot(df["vx"], df["vy"]), label="speed")
     if "vy" in df: plt.plot(df["time"], df["vy"], label="vy")
-    plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title(f"Speed & vy: {label}"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("[m/s]"); plt.title(f"Speed & vy: {label}"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_speed_vy.png"), dpi=150)
     plt.close(fig)
@@ -76,14 +76,14 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     # 3) Yaw rate and sideslip
     fig = plt.figure()
     plt.plot(df["time"], df["omega"], label="omega [rad/s]")
-    plt.xlabel("time [s]"); plt.ylabel("omega [rad/s]"); plt.title(f"Yaw rate {label}"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("omega [rad/s]"); plt.title(f"Yaw rate {label}"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_omega.png"), dpi=150)
     plt.close(fig)
 
     fig = plt.figure()
     plt.plot(df["time"], np.rad2deg(df["beta"]), label="beta [deg]")
-    plt.xlabel("time [s]"); plt.ylabel("beta [deg]"), plt.title(f"Sideslip: {label}"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("beta [deg]"), plt.title(f"Sideslip: {label}"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_beta.png"), dpi=150)
     plt.close(fig)
@@ -91,14 +91,14 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     # 4) Controls
     fig = plt.figure()
     plt.plot(df["time"], df["throttle"], label="throttle", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title(f"Throttle: {label}"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("throttle []"); plt.title(f"Throttle: {label}"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
     plt.close(fig)
 
     fig = plt.figure()
     plt.plot(df["time"], df["steering"], label="steering", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title(f"Steering: {label}"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("steering [deg]"); plt.title(f"Steering: {label}"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
     plt.close(fig)
@@ -107,7 +107,7 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     if df["throttle rate"]:
         fig = plt.figure()
         plt.plot(df["time"], df["throttle rate"], label="throttle_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("throttle rate []"); plt.title(f"Throttle Rate: {label}"); plt.legend()
+        plt.xlabel("timestep"); plt.ylabel("throttle rate []"); plt.title(f"Throttle Rate: {label}"); plt.legend()
         fig.tight_layout()
         fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
         plt.close(fig)
@@ -115,7 +115,7 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     if df["steering rate"]:
         fig = plt.figure()
         plt.plot(df["time"], df["steering rate"], label="steering_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title(f"Steering Rate: {label}"); plt.legend()
+        plt.xlabel("timestep"); plt.ylabel("steering rate [deg/s]"); plt.title(f"Steering Rate: {label}"); plt.legend()
         fig.tight_layout()
         fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
         plt.close(fig)
@@ -123,21 +123,21 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     # 5) Errors
     fig = plt.figure()
     plt.plot(df["time"], df["lat_err"], label="lat [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
     plt.close(fig)
 
     fig = plt.figure()
     plt.plot(df["time"], df["lag_err"], label="lag [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
     plt.close(fig)
 
     fig = plt.figure()
     plt.plot(df["time"], df["pos_err"], label="pos [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
     plt.close(fig)
@@ -155,14 +155,14 @@ def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
     plt.figure("Cumulative Error (abs)")
     plt.plot(t, cum_abs_lat, label=f"∫|lat| dt — {label}")
     plt.plot(t, cum_pos,     label=f"∫pos dt — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
+    plt.xlabel("timestep"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
     plt.legend()
 
     # Optional RMS trend over time (nice for seeing convergence)
     rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
     fig = plt.figure()
     plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
     fig.tight_layout()
     fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
     plt.close(fig)
@@ -384,55 +384,60 @@ def plot_one(df, label=None):
     plt.legend()
 
     # Speed & vy
-    plt.figure("Speed/vy")
+    plt.figure("Speed (vx)")
     plt.plot(np.hypot(df["vx"], df["vy"]), label=f"speed {label}" if label else "speed")
-    if "vy" in df: plt.plot(df["vy"], label=f"vy {label}" if label else "vy")
-    plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title("Speed and Lateral Velocity"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("[m/s]"); plt.title("Speed"); plt.legend()
+
+    plt.figure("vy")
+    plt.plot(df["vy"], label=f"vy {label}" if label else "vy")
+    plt.xlabel("timestep"); plt.ylabel("[m/s]"); plt.title("Lateral Velocity"); plt.legend()
 
     # Yaw rate & beta
     plt.figure("Omega")
     plt.plot(df["omega"], label=f"omega {label}" if label else "omega")
-    plt.xlabel("time [s]"); plt.ylabel("yaw rate [rad/s]"); plt.title("Yaw rate"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("yaw rate [rad/s]"); plt.title("Yaw rate"); plt.legend()
 
     plt.figure("Beta")
     plt.plot(np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
-    plt.xlabel("time [s]"); plt.ylabel("sideslip [deg/s]"); plt.title("Sideslip"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("sideslip [deg/s]"); plt.title("Sideslip"); plt.legend()
 
     # Controls
     plt.figure("Throttle")
     plt.plot(df["throttle"], label=f"throttle {label}" if label else "throttle", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title("Throttle"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("throttle []"); plt.title("Throttle"); plt.legend()
 
     plt.figure("Steering")
     plt.plot(df["steering"], label=f"steering {label}" if label else "steering", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title("Steering"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("steering [deg]"); plt.title("Steering"); plt.legend()
 
     # Rates
     if "throttle rate" in df.columns:
         plt.figure("Throttle Rate")
         plt.plot(df["throttle rate"], label=f"throttle_rate {label}" if label else "throttle_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("throttle rate []"); plt.title("Throttle Rate"); plt.legend()
+        plt.xlabel("timestep"); plt.ylabel("throttle rate []"); plt.title("Throttle Rate"); plt.legend()
 
     if "steering rate" in df.columns:
         plt.figure("Steering Rate")
         plt.plot(df["steering rate"], label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
+        plt.xlabel("timestep"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
 
     # Errors
     plt.figure("Lateral Error")
     plt.plot(df["lat_err"], label=f"lat {label}" if label else "lat")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
 
     plt.figure("Lag Error")
     plt.plot(df["lag_err"], label=f"lag {label}" if label else "lag")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
 
     plt.figure("Pos Error")
     plt.plot(df["pos_err"], label=f"pos {label}" if label else "pos")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
 
     t = df["time"].to_numpy(float)
-    dt = np.diff(t, prepend=t[0]); dt[0] = 0.0
+    dt = df["dt"][0]
+
+    print(dt)
 
     lat = df["lat_err"].to_numpy(float)
     pos = df["pos_err"].to_numpy(float)
@@ -442,16 +447,16 @@ def plot_one(df, label=None):
     cum_lat2    = np.cumsum((lat**2) * dt)     # ∫lat^2 dt (optional)
 
     plt.figure("Cumulative Error (abs)")
-    plt.plot(t, cum_abs_lat, label=f"∫|lat| dt — {label}")
-    plt.plot(t, cum_pos,     label=f"∫pos dt — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
+    plt.plot(cum_abs_lat, label=f"∫|lat| dt — {label}")
+    plt.plot(cum_pos,     label=f"∫pos dt — {label}")
+    plt.xlabel("timestep"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
     plt.legend()
 
     # Optional RMS trend over time (nice for seeing convergence)
     rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
     plt.figure("RMS Lat (trend)")
     plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
+    plt.xlabel("timestep"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
 
 
 def load_and_prepare(csv_path):
@@ -651,6 +656,7 @@ def _burst_metrics(t, y, thr):
         tt = t[s:e+1]; yy = y[s:e+1] - thr
         dt = np.diff(tt, prepend=tt[0]); dt[0] = 0.0
         area += float(np.sum(np.maximum(yy, 0.0) * dt))
+
 
     frac = (time_above / T) if T > 0 else np.nan
     return n_bursts, frac, longest, area

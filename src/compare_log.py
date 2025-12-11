@@ -6,6 +6,14 @@ import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import re
+from matplotlib.patches import Ellipse
+
+from dart_dynamic_models import model_functions,load_SVGPModel_actuator_dynamics_analytic
+import sys
+import importlib.resources
+
+mf = model_functions()
+
 
 from path_track_definitions import generate_path_data
 
@@ -13,6 +21,11 @@ mpl.rcParams.update({
     "axes.grid": True, "grid.linestyle": "--", "grid.alpha": 0.35
 })
 BASE_DIR = "/home/maarten/Documents/Thesis/log_Dart"
+
+# obstacle footprint (must match ROSObjective.obst_a/obst_b)
+OBST_A = 0.5   # [m] semi-axis along length
+OBST_B = 0.25  # [m] semi-axis along width
+
 
 def _add_direction_arrows(ax, xs, ys, num=3, color=None, frac_len=0.05, z=3):
     """Place `num` arrows along polyline (xs, ys).
@@ -39,133 +52,6 @@ def _add_direction_arrows(ax, xs, ys, num=3, color=None, frac_len=0.05, z=3):
               angles='xy', scale_units='xy', scale=1,
               width=0.003, headwidth=3, headlength=5, headaxislength=4,
               color=color, zorder=z, label='_nolegend_')
-
-
-def plot_and_save_per_run(df, label, save_dir, x_path, y_path):
-    os.makedirs(save_dir, exist_ok=True)
-
-    # 1) XY with track
-    fig = plt.figure(figsize=(6,6))
-    ax = plt.gca()
-    plt.plot(x_path, y_path, linestyle="--", linewidth=1, label="track")
-    h, = plt.plot(df["x"], df["y"], label=label)
-    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title(f"Trajectory: {label}")
-    plt.legend()
-
-    # Add arrows: first set limits so span is known
-    fig.canvas.draw_idle()
-    ax.relim(); ax.autoscale_view()
-    print("pre test arrows")
-    # three arrows on the **track** (grey)
-    _add_direction_arrows(ax, x_path, y_path, num=3, color="0.5", frac_len=0.06, z=3)
-
-
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_xy.png"), dpi=150)
-    plt.close(fig)
-
-    # 2) Speed & vy
-    fig = plt.figure()
-    plt.plot(df["time"], np.hypot(df["vx"], df["vy"]), label="speed")
-    if "vy" in df: plt.plot(df["time"], df["vy"], label="vy")
-    plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title(f"Speed & vy: {label}"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_speed_vy.png"), dpi=150)
-    plt.close(fig)
-
-    # 3) Yaw rate and sideslip
-    fig = plt.figure()
-    plt.plot(df["time"], df["omega"], label="omega [rad/s]")
-    plt.xlabel("time [s]"); plt.ylabel("omega [rad/s]"); plt.title(f"Yaw rate {label}"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_omega.png"), dpi=150)
-    plt.close(fig)
-
-    fig = plt.figure()
-    plt.plot(df["time"], np.rad2deg(df["beta"]), label="beta [deg]")
-    plt.xlabel("time [s]"); plt.ylabel("beta [deg]"), plt.title(f"Sideslip: {label}"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_beta.png"), dpi=150)
-    plt.close(fig)
-
-    # 4) Controls
-    fig = plt.figure()
-    plt.plot(df["time"], df["throttle"], label="throttle", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title(f"Throttle: {label}"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
-    plt.close(fig)
-
-    fig = plt.figure()
-    plt.plot(df["time"], df["steering"], label="steering", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title(f"Steering: {label}"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
-    plt.close(fig)
-
-    # Rates
-    if df["throttle rate"]:
-        fig = plt.figure()
-        plt.plot(df["time"], df["throttle rate"], label="throttle_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("throttle rate []"); plt.title(f"Throttle Rate: {label}"); plt.legend()
-        fig.tight_layout()
-        fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
-        plt.close(fig)
-
-    if df["steering rate"]:
-        fig = plt.figure()
-        plt.plot(df["time"], df["steering rate"], label="steering_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title(f"Steering Rate: {label}"); plt.legend()
-        fig.tight_layout()
-        fig.savefig(os.path.join(save_dir, f"{label}_controls.png"), dpi=150)
-        plt.close(fig)
-
-    # 5) Errors
-    fig = plt.figure()
-    plt.plot(df["time"], df["lat_err"], label="lat [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
-    plt.close(fig)
-
-    fig = plt.figure()
-    plt.plot(df["time"], df["lag_err"], label="lag [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Lag Error vs time"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
-    plt.close(fig)
-
-    fig = plt.figure()
-    plt.plot(df["time"], df["pos_err"], label="pos [m]")
-    plt.xlabel("time [s]"); plt.ylabel("error [m]"); plt.title("Positional Error vs time"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
-    plt.close(fig)
-
-    t = df["time"].to_numpy(float)
-    dt = np.diff(t, prepend=t[0]); dt[0] = 0.0
-
-    lat = df["lat_err"].to_numpy(float)
-    pos = df["pos_err"].to_numpy(float)
-
-    cum_abs_lat = np.cumsum(np.abs(lat) * dt)  # ∫|lat| dt
-    cum_pos     = np.cumsum(pos * dt)          # ∫||pos|| dt
-    cum_lat2    = np.cumsum((lat**2) * dt)     # ∫lat^2 dt (optional)
-
-    plt.figure("Cumulative Error (abs)")
-    plt.plot(t, cum_abs_lat, label=f"∫|lat| dt — {label}")
-    plt.plot(t, cum_pos,     label=f"∫pos dt — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
-    plt.legend()
-
-    # Optional RMS trend over time (nice for seeing convergence)
-    rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
-    fig = plt.figure()
-    plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(save_dir, f"{label}_errors.png"), dpi=150)
-    plt.close(fig)
 
 def nearest_path_indices(xs, ys, x_path, y_path):
     xy_path = np.vstack([x_path, y_path]).T
@@ -288,13 +174,15 @@ def summarise_run(df, csv_path):
     # Controls
     thr = df["throttle"].to_numpy(float) if "throttle" in df.columns else np.full(n, np.nan)
     ste = df["steering"].to_numpy(float) if "steering" in df.columns else np.full(n, np.nan)
-    # dste = derive(ste, t)
+
+    ste_angle = mf.steering_2_steering_angle(ste, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self)
+    dste = derive(ste_angle, t)
 
     thr_mean = float(np.nanmean(thr))
     thr_l1   = float(area_l1(thr, t))
-    ste_rms  = float(nanrms(ste))
-    # ste_energy = float(area_l2(ste, t))       # ∫ steer^2 dt
-    # ste_rate_energy = float(area_l2(dste, t)) # ∫ (d/dt steer)^2 dt
+    ste_rms  = float(nanrms(ste_angle))
+    # ste_energy = float(area_l2(ste_angle, t))       # ∫ steer^2 dt
+    ste_rate_energy = float(area_l2(dste, t)) # ∫ (d/dt steer)^2 dt
 
     # Sideslip if available
     if "beta" in df.columns:
@@ -326,7 +214,7 @@ def summarise_run(df, csv_path):
 
     # steering peaks & bursts (derivative-based bursts)
     if "steering" in df.columns:
-        steering = ste
+        steering = ste_angle
         dste = _diff(steering, t)
         # try to detect radians vs degrees for the *value* peak count
         steer_is_rad = np.nanmax(np.abs(steering)) < 3.5
@@ -353,7 +241,7 @@ def summarise_run(df, csv_path):
         "abs_lat_per_s_m": abs_lat_per_s, "pos_err_per_s_m": pos_per_s,
         "tib_<5cm": tib[0.05], "tib_<10cm": tib[0.10], "tib_<20cm": tib[0.20], "tib_<50cm": tib[0.50],
         "thr_mean": thr_mean, "int_abs_thr": thr_l1,
-        "ste_rms": ste_rms,  # "ste_rate_energy": ste_rate_energy,
+        "ste_rms": ste_rms,  "ste_rate_energy": ste_rate_energy,
         "beta_mean_abs_deg": beta_mean_abs, "beta_max_deg": beta_max,
     }
 
@@ -376,18 +264,164 @@ def summarise_run(df, csv_path):
     })
     return out
 
+
+
+# obstacle footprint (must match ROSObjective.obst_a / obst_b)
+OBST_A = 0.5   # [m] semi-axis along obstacle "length"
+OBST_B = 0.25  # [m] semi-axis along obstacle "width"
+
+# when is obstacle "relevant" in XY plot?
+OBS_DIST_THRESH = 1.0      # [m]
+OBS_MAX_ELLIPSES = 10      # max ellipses per run
+
+# lane parameters (keep consistent with ROSObjective)
+LANE_WIDTH   = 1.0         # [m]
+LANE_MARGIN  = 0.05        # [m]
+W_LANE       = 100.0       # same w_lane as in objective
+OBST_MARGIN  = 0.05        # obstacle_margin in objective
+W_OPPONENT   = 300.0       # same w_opponent as in objective
+
+def softplus_hinge(x, sharp=25.0):
+    x = np.asarray(x, float)
+    return np.log1p(np.exp(sharp * x)) / sharp
+
 def plot_one(df, label=None):
 
     # XY
-    plt.figure("XY"); plt.plot(df["x"], df["y"], label=label);
-    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
+    # plt.figure("XY"); plt.plot(df["x"], df["y"], label=label);
+    # plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
+    # plt.legend()
+
+    # XY
+    plt.figure("XY")
+    ax = plt.gca()
+    ax.plot(df["x"], df["y"], label=label)
+
+    # --- dynamic obstacle overlay (if present) ---
+    # if {"obstacle_x", "obstacle_y", "obstacle_yaw"}.issubset(df.columns):
+    #     obs_x   = df["obstacle_x"].to_numpy(float)
+    #     obs_y   = df["obstacle_y"].to_numpy(float)
+    #     obs_yaw = df["obstacle_yaw"].to_numpy(float)
+    #
+    #     # path of the obstacle centre (optional dashed line)
+    #     ax.plot(obs_x, obs_y, "--", alpha=0.4,
+    #             label=(f"obstacle path {label}" if label else "obstacle path"))
+    #
+    #     # distance car–obstacle (logged or recomputed)
+    #     if "obstacle_dist" in df.columns:
+    #         dist = df["obstacle_dist"].to_numpy(float)
+    #     else:
+    #         dx = df["x"].to_numpy(float) - obs_x
+    #         dy = df["y"].to_numpy(float) - obs_y
+    #         dist = np.hypot(dx, dy)
+    #
+    #     # indices where car is close to obstacle
+    #     close_idxs = np.where(np.isfinite(dist) & (dist <= OBS_DIST_THRESH))[0]
+    #
+    #     if close_idxs.size > 0:
+    #         # downsample so we don't draw at every timestep
+    #         if close_idxs.size > OBS_MAX_ELLIPSES:
+    #             step = int(np.ceil(close_idxs.size / OBS_MAX_ELLIPSES))
+    #             close_idxs = close_idxs[::step]
+    #
+    #         for i in close_idxs:
+    #             cx = obs_x[i]
+    #             cy = obs_y[i]
+    #             yaw = obs_yaw[i]
+    #             if not np.isfinite(cx) or not np.isfinite(cy) or not np.isfinite(yaw):
+    #                 continue
+    #
+    #             angle_deg = np.rad2deg(yaw)
+    #             e = Ellipse(
+    #                 (cx, cy),
+    #                 width=2.0 * OBST_A,
+    #                 height=2.0 * OBST_B,
+    #                 angle=angle_deg,
+    #                 fill=True,
+    #                 alpha=0.35,
+    #                 edgecolor="none"
+    #             )
+    #             ax.add_patch(e)
+
+    ax.set_aspect("equal", adjustable="box")
+    plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
     plt.legend()
 
+    # --- Closeness to obstacle and lane ---
+    if "obstacle_dist" in df.columns:
+        t   = df["time"].to_numpy(float)
+        lat = df["lat_err"].to_numpy(float)
+
+        half_w = 0.5 * LANE_WIDTH
+
+        # distance to each lane boundary in a "clearance" sense:
+        # positive = inside lane, negative = outside
+        lane_clearance = half_w - np.abs(lat)   # [m]
+
+        plt.figure("Closeness")
+        plt.plot(t, df["obstacle_dist"].to_numpy(float),
+                 label=f"obstacle_dist {label}" if label else "obstacle_dist")
+        plt.plot(t, lane_clearance,
+                 label=f"lane_clearance {label}" if label else "lane_clearance")
+
+        plt.axhline(0.0, color="k", linestyle="--", linewidth=1, label="_nolegend_")
+        plt.xlabel("time [s]")
+        plt.ylabel("distance [m]")
+        plt.title("Closeness to obstacle and lanes")
+        plt.legend()
+
+    # --- Lane & obstacle cost signals over time ---
+    has_obs = {"obstacle_x", "obstacle_y", "obstacle_yaw"}.issubset(df.columns)
+    if has_obs:
+        t   = df["time"].to_numpy(float)
+        lat = df["lat_err"].to_numpy(float)
+
+        # Lane cost: w_lane * softplus_hinge(|lat_err| - (half_w - margin))
+        half_w = 0.5 * LANE_WIDTH
+        excess = np.abs(lat) - (half_w - LANE_MARGIN)
+        lane_cost = W_LANE * softplus_hinge(excess)
+        lane_cost = np.clip(lane_cost, 0.0, 300.0)  # same cap as in code
+
+        # Obstacle cost: ellipse-based, matching _obstacle_cost
+        x = df["x"].to_numpy(float)
+        y = df["y"].to_numpy(float)
+        ox = df["obstacle_x"].to_numpy(float)
+        oy = df["obstacle_y"].to_numpy(float)
+        oyaw = df["obstacle_yaw"].to_numpy(float)
+
+        dx = x - ox
+        dy = y - oy
+
+        # transform into obstacle frame
+        cy = np.cos(oyaw)
+        sy = np.sin(oyaw)
+        # body frame: R^T * d
+        x_loc =  cy * dx + sy * dy
+        y_loc = -sy * dx + cy * dy
+
+        phi = (x_loc / OBST_A)**2 + (y_loc / OBST_B)**2 - 1.0  # ellipse implicit
+        arg = -phi + OBST_MARGIN
+        obstacle_cost = W_OPPONENT * softplus_hinge(arg)
+        obstacle_cost = np.clip(obstacle_cost, 0.0, 1e6)
+
+        plt.figure("Cost components")
+        plt.plot(t, lane_cost, label=f"lane_cost {label}" if label else "lane_cost")
+        plt.plot(t, obstacle_cost,  label=f"obstacle_cost {label}"  if label else "obstacle_cost")
+        plt.xlabel("time [s]")
+        plt.ylabel("cost")
+        plt.title("Lane & obstacle cost over time")
+        plt.legend()
+
     # Speed & vy
-    plt.figure("Speed/vy")
+    plt.figure("Speed (vx)")
     plt.plot(df["time"], np.hypot(df["vx"], df["vy"]), label=f"speed {label}" if label else "speed")
-    if "vy" in df: plt.plot(df["time"], df["vy"], label=f"vy {label}" if label else "vy")
-    plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title("Speed and Lateral Velocity"); plt.legend()
+    # if "vx est" in df:  plt.plot(df["time"], np.hypot(df["vx est"], df["vy est"]), label=f"(est) speed {label}" if label else "(est) speed")
+    plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title("Speed"); plt.legend()
+
+    plt.figure("vy")
+    plt.plot(df["time"], df["vy"], label=f"vy {label}" if label else "vy")
+    # if "vy est" in df:  plt.plot(df["time"], df["vy est"], label=f"(est) vy {label}" if label else "est vy")
+    plt.xlabel("time [s]"); plt.ylabel("[m/s]"); plt.title("Lateral Velocity"); plt.legend()
 
     # Yaw rate & beta
     plt.figure("Omega")
@@ -403,20 +437,52 @@ def plot_one(df, label=None):
     plt.plot(df["time"], df["throttle"], label=f"throttle {label}" if label else "throttle", drawstyle="steps-post")
     plt.xlabel("time [s]"); plt.ylabel("throttle []"); plt.title("Throttle"); plt.legend()
 
+
+    t = df["time"].to_numpy(float)
+    ste = df["steering"].to_numpy(float)
+
+    ste_angle = mf.steering_2_steering_angle(ste, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self)
+
+    # Decide if in rad or deg:
+    ste_is_rad = np.nanmax(np.abs(ste_angle)) < 3.5
+    if ste_is_rad:
+        ste_plot = np.rad2deg(ste_angle)  # for nicer units
+    else:
+        ste_plot = ste_angle
+
     plt.figure("Steering")
-    plt.plot(df["time"], df["steering"], label=f"steering {label}" if label else "steering", drawstyle="steps-post")
+    plt.plot(df["time"], ste_plot, label=f"steering {label}" if label else "steering", drawstyle="steps-post")
     plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title("Steering"); plt.legend()
 
     # Rates
-    if "throttle rate" in df.columns:
+    if "throttle rate" in df.columns and "mode" == "s-mppi":
         plt.figure("Throttle Rate")
         plt.plot(df["time"], df["throttle rate"], label=f"throttle_rate {label}" if label else "throttle_rate", drawstyle="steps-post")
         plt.xlabel("time [s]"); plt.ylabel("throttle rate []"); plt.title("Throttle Rate"); plt.legend()
 
-    if "steering rate" in df.columns:
+    else:
+        dthr = _diff(df["throttle"],t)
+
+        plt.figure("Throttle Rate")
+        plt.plot(df["time"], dthr, label=f"throttle_rate {label}" if label else "throttle_rate", drawstyle="steps-post")
+        plt.xlabel("time [s]"); plt.ylabel("throttle rate []"); plt.title("Throttle Rate"); plt.legend()
+
+    if "steering rate" in df.columns and "mode" == "s-mppi":
         plt.figure("Steering Rate")
         plt.plot(df["time"], df["steering rate"], label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
         plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
+
+        # dste_deg = .... has to be thought of a way to represent steering rate unitless to deg/s
+
+    else:
+        # Steering rate (deg/s)
+        dste = _diff(ste_angle, t)
+        dste_deg = np.rad2deg(dste) if ste_is_rad else dste
+
+        plt.figure("Steering Rate")
+        plt.plot(df["time"], dste_deg, label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
+        plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
+
 
     # Errors
     plt.figure("Lateral Error")
@@ -447,11 +513,37 @@ def plot_one(df, label=None):
     plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
     plt.legend()
 
-    # Optional RMS trend over time (nice for seeing convergence)
-    rms_lat = np.sqrt(cum_lat2 / (t - t[0] + 1e-9))
-    plt.figure("RMS Lat (trend)")
-    plt.plot(t, rms_lat, label=f"RMS(lat) — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("RMS Lateral Error over time"); plt.legend()
+    simple_fft_plot(df["time"], ste_plot, label, title="Steering FFT")
+    simple_fft_plot(df["time"], dste_deg, label, title="Steering rate FFT")
+
+
+def simple_fft_plot(t, y,label, title="FFT"):
+    t = np.asarray(t, float)
+    y = np.asarray(y, float)
+
+    # Remove NaNs
+    mask = np.isfinite(t) & np.isfinite(y)
+    t = t[mask]
+    y = y[mask]
+    if len(t) < 4:
+        return
+
+    # Use uniform dt assumption (approx ok)
+    dt = np.mean(np.diff(t))
+    y0 = y - np.mean(y)  # remove DC
+
+    # FFT
+    Y = np.fft.rfft(y0)
+    freqs = np.fft.rfftfreq(len(y0), d=dt)
+    mag = np.abs(Y)
+
+    plt.figure(title)
+    plt.plot(freqs, mag, label=f"frequency {label}" if label else "frequency")
+    plt.xlabel("frequency [Hz]")
+    plt.ylabel("magnitude")
+    plt.title(title)
+    plt.xlim(0, 10)  # only low frequencies where your control acts
+    plt.legend()
 
 
 def load_and_prepare(csv_path):
@@ -550,7 +642,7 @@ def main():
         "pos_mean_m","pos_rms_m","pos_max_m",
         "int_abs_lat_m_s","abs_lat_per_s_m","int_pos_m_s","pos_err_per_s_m",
         "tib_<5cm","tib_<10cm","tib_<20cm",
-        "thr_mean","int_abs_thr","ste_rms", # "ste_rate_energy",
+        "thr_mean","int_abs_thr","ste_rms", "ste_rate_energy",
         "beta_mean_abs_deg","beta_max_deg"
     ]
     cols = [c for c in preferred if c in summ_df.columns] + [c for c in summ_df.columns if c not in preferred]

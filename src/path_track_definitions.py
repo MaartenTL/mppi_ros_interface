@@ -2,10 +2,6 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 
 
-
-
-
-
 def generate_track(Checkpoints_x, Checkpoints_y, Checkpoints_s, Ds_back, Ds_forward, Checkpoints_k):
     # Checkpoints_Rx,Checkpoints_Ry,Checkpoints_Rz,
     # n_points = 2000
@@ -13,14 +9,16 @@ def generate_track(Checkpoints_x, Checkpoints_y, Checkpoints_s, Ds_back, Ds_forw
 
     # determine where to set the origin of s
     # find index of s = Ds_back
-    #index_start_lap = np.argmin(np.abs(Checkpoints_s - 0))
+    # index_start_lap = np.argmin(np.abs(Checkpoints_s - 0))
 
     index_start_lap = np.argmin(np.abs(Checkpoints_s - Ds_back))
 
     # now determine how long is a lap by finding the closest point to the starting point
-    distance_vector = np.sqrt((Checkpoints_x - Checkpoints_x[index_start_lap]) ** 2 + (Checkpoints_y - Checkpoints_y[index_start_lap]) ** 2)
-    index_forward = 10 # jump forwards by a little bit otherwise you will find the starting point again
-    idx_finish_lap = np.argmin(np.abs(distance_vector[index_start_lap+index_forward:] - distance_vector[index_start_lap])) + index_start_lap + index_forward
+    distance_vector = np.sqrt(
+        (Checkpoints_x - Checkpoints_x[index_start_lap]) ** 2 + (Checkpoints_y - Checkpoints_y[index_start_lap]) ** 2)
+    index_forward = 10  # jump forwards by a little bit otherwise you will find the starting point again
+    idx_finish_lap = np.argmin(np.abs(distance_vector[index_start_lap + index_forward:] - distance_vector[
+        index_start_lap])) + index_start_lap + index_forward
 
     # determine the length of the track
     track_length = Checkpoints_s[idx_finish_lap] - Checkpoints_s[index_start_lap]
@@ -47,7 +45,6 @@ def generate_track(Checkpoints_x, Checkpoints_y, Checkpoints_s, Ds_back, Ds_forw
     # R_z_4_local_path = np.array(Checkpoints_Rz[:idx_finish])
     k_4_local_path = np.array(Checkpoints_k[:idx_finish])
 
-
     # # just use Checkpoints_x and Checkpoints_y as the global path in the future
     # x_vals_global_path = Checkpoints_x
     # y_vals_global_path = Checkpoints_y
@@ -56,7 +53,7 @@ def generate_track(Checkpoints_x, Checkpoints_y, Checkpoints_s, Ds_back, Ds_forw
     # x_4_local_path = np.concatenate((Checkpoints_x[:-1],Checkpoints_x, Checkpoints_x[1:]))
     # y_4_local_path = np.concatenate((Checkpoints_y[:-1],Checkpoints_y, Checkpoints_y[1:]))
     # s_4_local_path = np.concatenate((s_vals_global_path[:-1] -s_vals_global_path[-1],s_vals_global_path, s_vals_global_path[1:] + s_vals_global_path[-1]))
-    
+
     # # generate cubic splines to resample in the required interval and with the required number of brakes
     # s_for_spline_generation = np.linspace(s_4_local_path[0], s_4_local_path[-1], spline_sections)
     # x_for_spline_generation = np.interp(s_for_spline_generation, s_4_local_path, x_4_local_path)
@@ -65,23 +62,19 @@ def generate_track(Checkpoints_x, Checkpoints_y, Checkpoints_s, Ds_back, Ds_forw
     # cs_scipy_x = CubicSpline(s_for_spline_generation, x_for_spline_generation)
     # cs_scipy_y = CubicSpline(s_for_spline_generation, y_for_spline_generation)
 
-
-
     # s_4_local_path = np.linspace(Ds_back, s_vals_global_path[-1] + Ds_forward, n_points)
     # x_4_local_path = cs_scipy_x(s_4_local_path)
     # y_4_local_path = cs_scipy_y(s_4_local_path)
-    
+
     # R_x_vals_global_path, R_y_vals_global_path, R_z_vals_global_path, R_x_4_local_path, R_y_4_local_path, R_z_4_local_path,\
-    return s_vals_global_path, x_vals_global_path, y_vals_global_path, s_4_local_path, x_4_local_path, y_4_local_path,\
-    k_vals_global_path, k_4_local_path
-
-
+    return s_vals_global_path, x_vals_global_path, y_vals_global_path, s_4_local_path, x_4_local_path, y_4_local_path, \
+        k_vals_global_path, k_4_local_path
 
 
 def raw_track(choice):
     n_checkpoints = 100
     x_shift_vicon_lab = -3
-    y_shift_vicon_lab = -2.2 #-2.7
+    y_shift_vicon_lab = -2.5
 
     if choice == 'savoiardo':
 
@@ -96,15 +89,17 @@ def raw_track(choice):
         Checkpoints_y1 = np.zeros(n_checkpoints) - R
         Checkpoints_x2 = 1.5 * R + R * np.cos(theta_vec2)
         Checkpoints_y2 = R * np.sin(theta_vec2)
-        Checkpoints_x3 = np.linspace(1.5 * R, -1.5*R, n_checkpoints)
+        Checkpoints_x3 = np.linspace(1.5 * R, -1.5 * R, n_checkpoints)
         Checkpoints_y3 = R * np.ones(n_checkpoints)
-        Checkpoints_x4 = -1.5* R + R * np.cos(theta_vec4)
+        Checkpoints_x4 = -1.5 * R + R * np.cos(theta_vec4)
         Checkpoints_y4 = R * np.sin(theta_vec4)
 
         Checkpoints_x = [*Checkpoints_x2[0:n_checkpoints - 1],
-                         *Checkpoints_x3[0:n_checkpoints - 1], *Checkpoints_x4[0:n_checkpoints - 1], *Checkpoints_x1[0:n_checkpoints]]
+                         *Checkpoints_x3[0:n_checkpoints - 1], *Checkpoints_x4[0:n_checkpoints - 1],
+                         *Checkpoints_x1[0:n_checkpoints]]
         Checkpoints_y = [*Checkpoints_y2[0:n_checkpoints - 1],
-                         *Checkpoints_y3[0:n_checkpoints - 1], *Checkpoints_y4[0:n_checkpoints -1], *Checkpoints_y1[0:n_checkpoints]]
+                         *Checkpoints_y3[0:n_checkpoints - 1], *Checkpoints_y4[0:n_checkpoints - 1],
+                         *Checkpoints_y1[0:n_checkpoints]]
 
 
     elif choice == 'double_donut':
@@ -121,9 +116,9 @@ def raw_track(choice):
         theta_vec3 = np.linspace(theta_init3, theta_end3, n_checkpoints)
 
         Checkpoints_x1 = - R + R * np.cos(theta_vec1)
-        Checkpoints_y1 =  + R * np.sin(theta_vec1)
+        Checkpoints_y1 = + R * np.sin(theta_vec1)
         Checkpoints_x2 = + R + R * np.cos(theta_vec2)
-        Checkpoints_y2 =  + R * np.sin(theta_vec2)
+        Checkpoints_y2 = + R * np.sin(theta_vec2)
         Checkpoints_x3 = - R + R * np.cos(theta_vec3)
         Checkpoints_y3 = + R * np.sin(theta_vec3)
 
@@ -132,9 +127,9 @@ def raw_track(choice):
         Checkpoints_y = [*Checkpoints_y1[0:n_checkpoints - 1], *Checkpoints_y2[0:n_checkpoints - 1],
                          *Checkpoints_y3[0:n_checkpoints]]
 
-    elif choice == 'straight_line':
-        Checkpoints_x = np.linspace(0, 100, n_checkpoints)
-        Checkpoints_y = np.zeros(n_checkpoints)
+    # elif choice == 'straight_line':
+    #     Checkpoints_x = np.linspace(0, 100, n_checkpoints)
+    #     Checkpoints_y = np.zeros(n_checkpoints)
 
     elif choice == 'savoiardo_saturate_steering':
         R = 0.3  # as a reference the max radius of curvature is  R = L/tan(delta) = 0.48
@@ -148,15 +143,17 @@ def raw_track(choice):
         Checkpoints_y1 = np.zeros(n_checkpoints) - R
         Checkpoints_x2 = 4.5 * R + R * np.cos(theta_vec2)
         Checkpoints_y2 = R * np.sin(theta_vec2)
-        Checkpoints_x3 = np.linspace(4.5 * R, -4.5*R, n_checkpoints)
+        Checkpoints_x3 = np.linspace(4.5 * R, -4.5 * R, n_checkpoints)
         Checkpoints_y3 = R * np.ones(n_checkpoints)
-        Checkpoints_x4 = -4.5* R + R * np.cos(theta_vec4)
+        Checkpoints_x4 = -4.5 * R + R * np.cos(theta_vec4)
         Checkpoints_y4 = R * np.sin(theta_vec4)
 
         Checkpoints_x = [*Checkpoints_x2[0:n_checkpoints - 1],
-                         *Checkpoints_x3[0:n_checkpoints - 1], *Checkpoints_x4[0:n_checkpoints - 1], *Checkpoints_x1[0:n_checkpoints ]]
+                         *Checkpoints_x3[0:n_checkpoints - 1], *Checkpoints_x4[0:n_checkpoints - 1],
+                         *Checkpoints_x1[0:n_checkpoints]]
         Checkpoints_y = [*Checkpoints_y2[0:n_checkpoints - 1],
-                         *Checkpoints_y3[0:n_checkpoints - 1], *Checkpoints_y4[0:n_checkpoints], *Checkpoints_y1[0:n_checkpoints - 1]]
+                         *Checkpoints_y3[0:n_checkpoints - 1], *Checkpoints_y4[0:n_checkpoints],
+                         *Checkpoints_y1[0:n_checkpoints - 1]]
 
     elif choice == 'racetrack_saturate_steering':
 
@@ -186,44 +183,44 @@ def raw_track(choice):
         theta_vec12 = np.linspace(theta_init12, theta_end12, n_checkpoints)
 
         # DEFINED STARTING FROM  START POINT AND THEN SHIFT IT LATER IF NEEDED
-        Checkpoints_x1 = np.linspace(0, 3*R, n_checkpoints)
+        Checkpoints_x1 = np.linspace(0, 3 * R, n_checkpoints)
         Checkpoints_y1 = np.zeros(n_checkpoints) - R
 
-        Checkpoints_x2 = + 3*R + R * np.cos(theta_vec2)
-        Checkpoints_y2 =  R * np.sin(theta_vec2)
+        Checkpoints_x2 = + 3 * R + R * np.cos(theta_vec2)
+        Checkpoints_y2 = R * np.sin(theta_vec2)
 
-        Checkpoints_x3 = 3*R + R * np.cos(theta_vec3)
-        Checkpoints_y3 = 2*R +R * np.sin(theta_vec3)
+        Checkpoints_x3 = 3 * R + R * np.cos(theta_vec3)
+        Checkpoints_y3 = 2 * R + R * np.sin(theta_vec3)
 
-        Checkpoints_x4 = + 3*R + R * np.cos(theta_vec2)
-        Checkpoints_y4 = + 4*R + R * np.sin(theta_vec2)
+        Checkpoints_x4 = + 3 * R + R * np.cos(theta_vec2)
+        Checkpoints_y4 = + 4 * R + R * np.sin(theta_vec2)
 
-        Checkpoints_x5 = np.linspace(3*R, -3*R, n_checkpoints)
-        Checkpoints_y5 = np.zeros(n_checkpoints) + 5*R
+        Checkpoints_x5 = np.linspace(3 * R, -3 * R, n_checkpoints)
+        Checkpoints_y5 = np.zeros(n_checkpoints) + 5 * R
 
-        Checkpoints_x6 = - 3*R + 2*R * np.cos(theta_vec6)
-        Checkpoints_y6 = + 3*R + 2*R * np.sin(theta_vec6)
+        Checkpoints_x6 = - 3 * R + 2 * R * np.cos(theta_vec6)
+        Checkpoints_y6 = + 3 * R + 2 * R * np.sin(theta_vec6)
 
-        Checkpoints_x7 = np.zeros(n_checkpoints) - 5*R
+        Checkpoints_x7 = np.zeros(n_checkpoints) - 5 * R
         Checkpoints_y7 = np.linspace(3 * R, 0, n_checkpoints)
 
         Checkpoints_x8 = - 4.5 * R + 0.5 * R * np.cos(theta_vec8)
         Checkpoints_y8 = + 0.5 * R * np.sin(theta_vec8)
 
-        Checkpoints_x9 = np.zeros(n_checkpoints) - 4*R
-        Checkpoints_y9 = np.linspace(0, 2*R, n_checkpoints)
+        Checkpoints_x9 = np.zeros(n_checkpoints) - 4 * R
+        Checkpoints_y9 = np.linspace(0, 2 * R, n_checkpoints)
 
         Checkpoints_x10 = - 3.5 * R + 0.5 * R * np.cos(theta_vec10)
         Checkpoints_y10 = + 2 * R + 0.5 * R * np.sin(theta_vec10)
 
-        Checkpoints_x11 = np.zeros(n_checkpoints) - 3*R
+        Checkpoints_x11 = np.zeros(n_checkpoints) - 3 * R
         Checkpoints_y11 = np.linspace(2 * R, 0, n_checkpoints)
 
         Checkpoints_x12 = - 2.5 * R + 0.5 * R * np.cos(theta_vec8)
         Checkpoints_y12 = + 0.5 * R * np.sin(theta_vec8)
 
-        Checkpoints_x13 = np.zeros(n_checkpoints) - 2*R
-        Checkpoints_y13 = np.linspace(0, 2*R, n_checkpoints)
+        Checkpoints_x13 = np.zeros(n_checkpoints) - 2 * R
+        Checkpoints_y13 = np.linspace(0, 2 * R, n_checkpoints)
 
         Checkpoints_x14 = - 1.5 * R + 0.5 * R * np.cos(theta_vec10)
         Checkpoints_y14 = + 2 * R + 0.5 * R * np.sin(theta_vec10)
@@ -307,12 +304,10 @@ def raw_track(choice):
         straight_bit = 0.5
 
         Checkpoints_x1, Checkpoints_y1 = straight([0, straight_bit], [0, 0], n_checkpoints)
-        Checkpoints_x2, Checkpoints_y2 = curve([straight_bit ,1 * R], R, [-0.5, 0.5], n_checkpoints)
-        Checkpoints_x3, Checkpoints_y3 = straight([straight_bit, 0], [2*R, 2*R], n_checkpoints)
-        Checkpoints_x4, Checkpoints_y4 = curve([0,3 * R], R, [1.5, 0.5], n_checkpoints)
-        Checkpoints_x5, Checkpoints_y5 = straight([0, 10*straight_bit], [8*R, 8*R], 10*n_checkpoints)
-
-
+        Checkpoints_x2, Checkpoints_y2 = curve([straight_bit, 1 * R], R, [-0.5, 0.5], n_checkpoints)
+        Checkpoints_x3, Checkpoints_y3 = straight([straight_bit, 0], [2 * R, 2 * R], n_checkpoints)
+        Checkpoints_x4, Checkpoints_y4 = curve([0, 3 * R], R, [1.5, 0.5], n_checkpoints)
+        Checkpoints_x5, Checkpoints_y5 = straight([0, 10 * straight_bit], [8 * R, 8 * R], 10 * n_checkpoints)
 
         Checkpoints_y = [*Checkpoints_x1[0:n_checkpoints - 1],
                          *Checkpoints_x2[0:n_checkpoints - 1],
@@ -328,10 +323,10 @@ def raw_track(choice):
                          *Checkpoints_y2[0:n_checkpoints - 1],
                          *Checkpoints_y3[0:n_checkpoints - 1],
                          *Checkpoints_y4[0:n_checkpoints - 1],
-                         *Checkpoints_y1[0:n_checkpoints - 1]+4*R,
-                         *Checkpoints_y2[0:n_checkpoints - 1]+4*R,
-                         *Checkpoints_y3[0:n_checkpoints - 1]+4*R,
-                         *Checkpoints_y4[0:n_checkpoints - 1]+4*R,
+                         *Checkpoints_y1[0:n_checkpoints - 1] + 4 * R,
+                         *Checkpoints_y2[0:n_checkpoints - 1] + 4 * R,
+                         *Checkpoints_y3[0:n_checkpoints - 1] + 4 * R,
+                         *Checkpoints_y4[0:n_checkpoints - 1] + 4 * R,
                          *Checkpoints_y5[0:]]
 
     elif choice == 'racetrack_Lab':
@@ -339,14 +334,13 @@ def raw_track(choice):
 
         # DEFINED STARTING FROM  START POINT AND THEN SHIFT IT LATER IF NEEDED
 
+        Checkpoints_x1, Checkpoints_y1 = straight([-1 + 3 * R, 1], [0, 0], n_checkpoints)
 
-        Checkpoints_x1, Checkpoints_y1 = straight([-1+3*R, 1], [0, 0], n_checkpoints)
+        Checkpoints_x2, Checkpoints_y2 = curve([1, 2 * R], 2 * R, [-0.5, 0.5], n_checkpoints)
 
-        Checkpoints_x2, Checkpoints_y2 = curve([1, 2*R], 2 * R, [-0.5, 0.5], n_checkpoints)
+        Checkpoints_x3, Checkpoints_y3 = straight([1, -1], [4 * R, 4 * R], n_checkpoints)
 
-        Checkpoints_x3, Checkpoints_y3 = straight([1, -1], [4*R, 4*R], n_checkpoints)
-
-        Checkpoints_x4, Checkpoints_y4 = curve([-1, 2.5*R], 1.5 * R, [0.5, 1.5], n_checkpoints)
+        Checkpoints_x4, Checkpoints_y4 = curve([-1, 2.5 * R], 1.5 * R, [0.5, 1.5], n_checkpoints)
 
         Checkpoints_x5, Checkpoints_y5 = straight([-1, 1], [R, R], n_checkpoints)
 
@@ -358,7 +352,7 @@ def raw_track(choice):
 
         Checkpoints_x9, Checkpoints_y9 = straight([-1 + R, -1 + R], [3 * R, 2 * R], n_checkpoints)
 
-        Checkpoints_x10, Checkpoints_y10 = curve([-1 + 3*R, 2 * R], 2 * R, [-1.0, -0.5], n_checkpoints)
+        Checkpoints_x10, Checkpoints_y10 = curve([-1 + 3 * R, 2 * R], 2 * R, [-1.0, -0.5], n_checkpoints)
 
         Checkpoints_x = [*Checkpoints_x1[0:n_checkpoints - 1],
                          *Checkpoints_x2[0:n_checkpoints - 1],
@@ -370,7 +364,7 @@ def raw_track(choice):
                          *Checkpoints_x8[0:n_checkpoints - 1],
                          *Checkpoints_x9[0:n_checkpoints - 1],
                          *Checkpoints_x10[0:n_checkpoints]]
-        y_shift = 2*R  #towards the bottom
+        y_shift = 2 * R  # towards the bottom
         Checkpoints_y = [*Checkpoints_y1[0:n_checkpoints - 1] - y_shift,
                          *Checkpoints_y2[0:n_checkpoints - 1] - y_shift,
                          *Checkpoints_y3[0:n_checkpoints - 1] - y_shift,
@@ -386,8 +380,6 @@ def raw_track(choice):
         R = 1  # as a reference the max radius of curvature is  R = L/tan(delta) = 0.48
 
         # DEFINED STARTING FROM  START POINT AND THEN SHIFT IT LATER IF NEEDED
-        
-
 
         Checkpoints_x1, Checkpoints_y1 = straight([-2, 2], [-1.5, -1.5], n_checkpoints)
 
@@ -405,19 +397,19 @@ def raw_track(choice):
 
         Checkpoints_x8, Checkpoints_y8 = curve([-2, -0.5], R, [-1, -0.5], n_checkpoints)
 
-        #Checkpoints_x9, Checkpoints_y9 = curve([-1.5, -1], 0.5*R, [1, 0], n_checkpoints)
+        # Checkpoints_x9, Checkpoints_y9 = curve([-1.5, -1], 0.5*R, [1, 0], n_checkpoints)
 
-        #Checkpoints_x10, Checkpoints_y10 = curve([-0.5, -1], 0.5*R, [-1, -0.5], n_checkpoints)
+        # Checkpoints_x10, Checkpoints_y10 = curve([-0.5, -1], 0.5*R, [-1, -0.5], n_checkpoints)
         x_shift = 0.5
         Checkpoints_x = [*Checkpoints_x1[0:n_checkpoints - 1] + x_shift,
-                         *Checkpoints_x2[0:n_checkpoints - 1]+ x_shift,
-                         *Checkpoints_x3[0:n_checkpoints - 1]+ x_shift,
-                         *Checkpoints_x4[0:n_checkpoints - 1]+ x_shift,
-                         *Checkpoints_x5[0:n_checkpoints - 1]+ x_shift,
-                         *Checkpoints_x6[0:n_checkpoints - 1]+ x_shift,
-                         *Checkpoints_x7[0:n_checkpoints - 1]+ x_shift,
-                         *Checkpoints_x8[0:n_checkpoints]+ x_shift]
-        y_shift = 0  #towards the bottom
+                         *Checkpoints_x2[0:n_checkpoints - 1] + x_shift,
+                         *Checkpoints_x3[0:n_checkpoints - 1] + x_shift,
+                         *Checkpoints_x4[0:n_checkpoints - 1] + x_shift,
+                         *Checkpoints_x5[0:n_checkpoints - 1] + x_shift,
+                         *Checkpoints_x6[0:n_checkpoints - 1] + x_shift,
+                         *Checkpoints_x7[0:n_checkpoints - 1] + x_shift,
+                         *Checkpoints_x8[0:n_checkpoints] + x_shift]
+        y_shift = 0  # towards the bottom
         Checkpoints_y = [*Checkpoints_y1[0:n_checkpoints - 1] - y_shift,
                          *Checkpoints_y2[0:n_checkpoints - 1] - y_shift,
                          *Checkpoints_y3[0:n_checkpoints - 1] - y_shift,
@@ -430,25 +422,25 @@ def raw_track(choice):
 
     elif choice == 'racetrack_vicon':
 
-        #l_large = 8.7
+        # l_large = 8.7
         l_large = 7
         l_small = 5.5
 
-        l_start = l_large / 2 # initial point (necessary for pure pursuit smoothing)
+        l_start = l_large / 2  # initial point (necessary for pure pursuit smoothing)
 
         R1 = 0.5
         R2 = 1.0
 
         theta_init1 = np.pi * (-0.5)
-        theta_end1 = theta_init1 + np.pi * (0.5)  
+        theta_end1 = theta_init1 + np.pi * (0.5)
         theta_vec1 = np.linspace(theta_init1, theta_end1, n_checkpoints)
 
         theta_init2 = theta_end1
-        theta_end2 = theta_init2 + np.pi * (1.0)  
+        theta_end2 = theta_init2 + np.pi * (1.0)
         theta_vec2 = np.linspace(theta_init2, theta_end2, n_checkpoints)
 
         theta_init3 = 0. * np.pi
-        theta_end3 = - np.pi * (1.0)  
+        theta_end3 = - np.pi * (1.0)
         theta_vec3 = np.linspace(theta_init3, theta_end3, n_checkpoints)
 
         theta_init4 = 0
@@ -464,10 +456,9 @@ def raw_track(choice):
         theta_R1_end = np.pi
         theta_R1_vec = np.linspace(theta_R1_init, theta_R1_end, n_checkpoints)
 
-
         # 1
-        Checkpoints_x1 = np.linspace(l_start, l_large-R2 , n_checkpoints)
-        Checkpoints_y1 = np.linspace(0,0 , n_checkpoints)
+        Checkpoints_x1 = np.linspace(l_start, l_large - R2, n_checkpoints)
+        Checkpoints_y1 = np.linspace(0, 0, n_checkpoints)
         Checkpoints_k1 = 0 * np.ones(n_checkpoints)
 
         # 2
@@ -477,7 +468,7 @@ def raw_track(choice):
 
         # 3
         Checkpoints_x3 = np.linspace(l_large, l_large, n_checkpoints)
-        Checkpoints_y3 = np.linspace(R2, l_small-R1, n_checkpoints)
+        Checkpoints_y3 = np.linspace(R2, l_small - R1, n_checkpoints)
         Checkpoints_k3 = 0 * np.ones(n_checkpoints)
 
         # 4
@@ -487,17 +478,17 @@ def raw_track(choice):
 
         # 5
         Checkpoints_x5 = np.linspace(Checkpoints_x4[-1], Checkpoints_x4[-1], n_checkpoints)
-        Checkpoints_y5 = np.linspace(Checkpoints_y4[-1], R1+R2, n_checkpoints)
+        Checkpoints_y5 = np.linspace(Checkpoints_y4[-1], R1 + R2, n_checkpoints)
         Checkpoints_k5 = 0 * np.ones(n_checkpoints)
 
         # 6
-        Checkpoints_x6 = l_large - 2*R1 - R2 + R2 * np.cos(theta_vec3)
+        Checkpoints_x6 = l_large - 2 * R1 - R2 + R2 * np.cos(theta_vec3)
         Checkpoints_y6 = R1 + R2 + R2 * np.sin(theta_vec3)
         Checkpoints_k6 = - 1 / R2 * np.ones(n_checkpoints)
 
         # 7
         Checkpoints_x7 = np.linspace(Checkpoints_x6[-1], Checkpoints_x6[-1], n_checkpoints)
-        Checkpoints_y7 = np.linspace(Checkpoints_y6[-1], l_small-R2, n_checkpoints)
+        Checkpoints_y7 = np.linspace(Checkpoints_y6[-1], l_small - R2, n_checkpoints)
         Checkpoints_k7 = 0 * np.ones(n_checkpoints)
 
         # 8
@@ -511,7 +502,7 @@ def raw_track(choice):
         Checkpoints_k9 = 0 * np.ones(n_checkpoints)
 
         # 10
-        Checkpoints_x10 =  R1 + R2 + R1 * np.cos(theta_vec3)
+        Checkpoints_x10 = R1 + R2 + R1 * np.cos(theta_vec3)
         Checkpoints_y10 = 0.5 + R1 + R1 * np.sin(theta_vec3)
         Checkpoints_k10 = - 1 / R1 * np.ones(n_checkpoints)
 
@@ -536,91 +527,90 @@ def raw_track(choice):
         Checkpoints_k14 = + 1 / R2 * np.ones(n_checkpoints)
 
         # 15
-        Checkpoints_x15 = np.linspace(R2, l_start , n_checkpoints)
-        Checkpoints_y15 = np.linspace(0,0 , n_checkpoints)
+        Checkpoints_x15 = np.linspace(R2, l_start, n_checkpoints)
+        Checkpoints_y15 = np.linspace(0, 0, n_checkpoints)
         Checkpoints_k15 = 0 * np.ones(n_checkpoints)
-
 
         # Concatenate all checkpoints
         Checkpoints_x = np.concatenate((
-                                        Checkpoints_x1[0:n_checkpoints - 1],
-                                        Checkpoints_x2[0:n_checkpoints - 1],
-                                        Checkpoints_x3[0:n_checkpoints - 1],
-                                        Checkpoints_x4[0:n_checkpoints - 1],
-                                        Checkpoints_x5[0:n_checkpoints - 1],
-                                        Checkpoints_x6[0:n_checkpoints - 1],
-                                        Checkpoints_x7[0:n_checkpoints - 1],
-                                        Checkpoints_x8[0:n_checkpoints - 1],
-                                        Checkpoints_x9[0:n_checkpoints - 1],
-                                        Checkpoints_x10[0:n_checkpoints - 1],
-                                        Checkpoints_x11[0:n_checkpoints - 1],
-                                        Checkpoints_x12[0:n_checkpoints - 1],
-                                        Checkpoints_x13[0:n_checkpoints - 1],
-                                        Checkpoints_x14[0:n_checkpoints -1],
-                                        Checkpoints_x15[0:n_checkpoints-1],
-                                        ),
-                                        axis=0)
+            Checkpoints_x1[0:n_checkpoints - 1],
+            Checkpoints_x2[0:n_checkpoints - 1],
+            Checkpoints_x3[0:n_checkpoints - 1],
+            Checkpoints_x4[0:n_checkpoints - 1],
+            Checkpoints_x5[0:n_checkpoints - 1],
+            Checkpoints_x6[0:n_checkpoints - 1],
+            Checkpoints_x7[0:n_checkpoints - 1],
+            Checkpoints_x8[0:n_checkpoints - 1],
+            Checkpoints_x9[0:n_checkpoints - 1],
+            Checkpoints_x10[0:n_checkpoints - 1],
+            Checkpoints_x11[0:n_checkpoints - 1],
+            Checkpoints_x12[0:n_checkpoints - 1],
+            Checkpoints_x13[0:n_checkpoints - 1],
+            Checkpoints_x14[0:n_checkpoints - 1],
+            Checkpoints_x15[0:n_checkpoints - 1],
+        ),
+            axis=0)
 
         Checkpoints_y = np.concatenate((
-                                        Checkpoints_y1[0:n_checkpoints - 1],
-                                        Checkpoints_y2[0:n_checkpoints - 1],
-                                        Checkpoints_y3[0:n_checkpoints - 1],
-                                        Checkpoints_y4[0:n_checkpoints - 1],
-                                        Checkpoints_y5[0:n_checkpoints - 1],
-                                        Checkpoints_y6[0:n_checkpoints - 1],
-                                        Checkpoints_y7[0:n_checkpoints - 1],
-                                        Checkpoints_y8[0:n_checkpoints - 1],
-                                        Checkpoints_y9[0:n_checkpoints - 1],
-                                        Checkpoints_y10[0:n_checkpoints - 1],
-                                        Checkpoints_y11[0:n_checkpoints - 1],
-                                        Checkpoints_y12[0:n_checkpoints - 1],
-                                        Checkpoints_y13[0:n_checkpoints - 1],
-                                        Checkpoints_y14[0:n_checkpoints -1 ],
-                                        Checkpoints_y15[0:n_checkpoints-1] ,
-                                        ),
-                                        axis=0)
-        
+            Checkpoints_y1[0:n_checkpoints - 1],
+            Checkpoints_y2[0:n_checkpoints - 1],
+            Checkpoints_y3[0:n_checkpoints - 1],
+            Checkpoints_y4[0:n_checkpoints - 1],
+            Checkpoints_y5[0:n_checkpoints - 1],
+            Checkpoints_y6[0:n_checkpoints - 1],
+            Checkpoints_y7[0:n_checkpoints - 1],
+            Checkpoints_y8[0:n_checkpoints - 1],
+            Checkpoints_y9[0:n_checkpoints - 1],
+            Checkpoints_y10[0:n_checkpoints - 1],
+            Checkpoints_y11[0:n_checkpoints - 1],
+            Checkpoints_y12[0:n_checkpoints - 1],
+            Checkpoints_y13[0:n_checkpoints - 1],
+            Checkpoints_y14[0:n_checkpoints - 1],
+            Checkpoints_y15[0:n_checkpoints - 1],
+        ),
+            axis=0)
+
         Checkpoints_k = np.concatenate((
-                                        Checkpoints_k1[0:n_checkpoints - 1],
-                                        Checkpoints_k2[0:n_checkpoints - 1],
-                                        Checkpoints_k3[0:n_checkpoints - 1],
-                                        Checkpoints_k4[0:n_checkpoints - 1],
-                                        Checkpoints_k5[0:n_checkpoints - 1],
-                                        Checkpoints_k6[0:n_checkpoints - 1],
-                                        Checkpoints_k7[0:n_checkpoints - 1],
-                                        Checkpoints_k8[0:n_checkpoints - 1],
-                                        Checkpoints_k9[0:n_checkpoints - 1],
-                                        Checkpoints_k10[0:n_checkpoints - 1],
-                                        Checkpoints_k11[0:n_checkpoints - 1],
-                                        Checkpoints_k12[0:n_checkpoints - 1],
-                                        Checkpoints_k13[0:n_checkpoints - 1],
-                                        Checkpoints_k14[0:n_checkpoints -1],
-                                        Checkpoints_k15[0:n_checkpoints- 1],
-                                        ),
-                                        axis=0)
+            Checkpoints_k1[0:n_checkpoints - 1],
+            Checkpoints_k2[0:n_checkpoints - 1],
+            Checkpoints_k3[0:n_checkpoints - 1],
+            Checkpoints_k4[0:n_checkpoints - 1],
+            Checkpoints_k5[0:n_checkpoints - 1],
+            Checkpoints_k6[0:n_checkpoints - 1],
+            Checkpoints_k7[0:n_checkpoints - 1],
+            Checkpoints_k8[0:n_checkpoints - 1],
+            Checkpoints_k9[0:n_checkpoints - 1],
+            Checkpoints_k10[0:n_checkpoints - 1],
+            Checkpoints_k11[0:n_checkpoints - 1],
+            Checkpoints_k12[0:n_checkpoints - 1],
+            Checkpoints_k13[0:n_checkpoints - 1],
+            Checkpoints_k14[0:n_checkpoints - 1],
+            Checkpoints_k15[0:n_checkpoints - 1],
+        ),
+            axis=0)
 
 
 
     elif choice == 'racetrack_vicon_2':
 
-        #l_large = 8.7
+        # l_large = 8.7
         l_large = 4.5
         l_small = 4.5
 
-        l_start = l_large / 2 # initial point (necessary for pure pursuit smoothing)
+        l_start = l_large / 2  # initial point (necessary for pure pursuit smoothing)
 
         R = 0.75
 
         theta_init1 = np.pi * (-0.5)
-        theta_end1 = theta_init1 + np.pi * (0.5)  
+        theta_end1 = theta_init1 + np.pi * (0.5)
         theta_vec1 = np.linspace(theta_init1, theta_end1, n_checkpoints)
 
         theta_init2 = theta_end1
-        theta_end2 = theta_init2 + np.pi * (1.0)  
+        theta_end2 = theta_init2 + np.pi * (1.0)
         theta_vec2 = np.linspace(theta_init2, theta_end2, n_checkpoints)
 
         theta_init3 = 0. * np.pi
-        theta_end3 = - np.pi * (1.0)  
+        theta_end3 = - np.pi * (1.0)
         theta_vec3 = np.linspace(theta_init3, theta_end3, n_checkpoints)
 
         theta_init4 = 0
@@ -637,8 +627,8 @@ def raw_track(choice):
         theta_R1_vec = np.linspace(theta_R1_init, theta_R1_end, n_checkpoints)
 
         # 1
-        Checkpoints_x1 = np.linspace(l_start, l_large-R, n_checkpoints)
-        Checkpoints_y1 = np.linspace(0,0 , n_checkpoints)
+        Checkpoints_x1 = np.linspace(l_start, l_large - R, n_checkpoints)
+        Checkpoints_y1 = np.linspace(0, 0, n_checkpoints)
         Checkpoints_k1 = 0 * np.ones(n_checkpoints)
 
         # 2
@@ -648,7 +638,7 @@ def raw_track(choice):
 
         # 3
         Checkpoints_x3 = np.linspace(l_large, l_large, n_checkpoints)
-        Checkpoints_y3 = np.linspace(R, l_small-R, n_checkpoints)
+        Checkpoints_y3 = np.linspace(R, l_small - R, n_checkpoints)
         Checkpoints_k3 = 0 * np.ones(n_checkpoints)
 
         # 4
@@ -658,17 +648,17 @@ def raw_track(choice):
 
         # 5
         Checkpoints_x5 = np.linspace(Checkpoints_x4[-1], Checkpoints_x4[-1], n_checkpoints)
-        Checkpoints_y5 = np.linspace(Checkpoints_y4[-1], R+R, n_checkpoints)
+        Checkpoints_y5 = np.linspace(Checkpoints_y4[-1], R + R, n_checkpoints)
         Checkpoints_k5 = 0 * np.ones(n_checkpoints)
 
         # 6
-        Checkpoints_x6 = l_large - 2*R - R + R * np.cos(theta_vec3)
+        Checkpoints_x6 = l_large - 2 * R - R + R * np.cos(theta_vec3)
         Checkpoints_y6 = R + R + R * np.sin(theta_vec3)
         Checkpoints_k6 = - 1 / R * np.ones(n_checkpoints)
 
         # 7
         Checkpoints_x7 = np.linspace(Checkpoints_x6[-1], Checkpoints_x6[-1], n_checkpoints)
-        Checkpoints_y7 = np.linspace(Checkpoints_y6[-1], l_small-R, n_checkpoints)
+        Checkpoints_y7 = np.linspace(Checkpoints_y6[-1], l_small - R, n_checkpoints)
         Checkpoints_k7 = 0 * np.ones(n_checkpoints)
 
         # 8
@@ -687,65 +677,231 @@ def raw_track(choice):
         Checkpoints_k10 = + 1 / R * np.ones(n_checkpoints)
 
         # 11
-        Checkpoints_x11= np.linspace(R, l_start , n_checkpoints)
-        Checkpoints_y11 = np.linspace(0,0 , n_checkpoints)
+        Checkpoints_x11 = np.linspace(R, l_start, n_checkpoints)
+        Checkpoints_y11 = np.linspace(0, 0, n_checkpoints)
         Checkpoints_k11 = 0 * np.ones(n_checkpoints)
 
         # Concatenate all checkpoints
         Checkpoints_x = np.concatenate((
-                                        Checkpoints_x1[0:n_checkpoints - 1],
-                                        Checkpoints_x2[0:n_checkpoints - 1],
-                                        Checkpoints_x3[0:n_checkpoints - 1],
-                                        Checkpoints_x4[0:n_checkpoints - 1],
-                                        Checkpoints_x5[0:n_checkpoints - 1],
-                                        Checkpoints_x6[0:n_checkpoints - 1],
-                                        Checkpoints_x7[0:n_checkpoints - 1],
-                                        Checkpoints_x8[0:n_checkpoints - 1],
-                                        Checkpoints_x9[0:n_checkpoints - 1],
-                                        Checkpoints_x10[0:n_checkpoints - 1],
-                                        Checkpoints_x11[0:n_checkpoints - 1],
-                                        ),
-                                        axis=0)
+            Checkpoints_x1[0:n_checkpoints - 1],
+            Checkpoints_x2[0:n_checkpoints - 1],
+            Checkpoints_x3[0:n_checkpoints - 1],
+            Checkpoints_x4[0:n_checkpoints - 1],
+            Checkpoints_x5[0:n_checkpoints - 1],
+            Checkpoints_x6[0:n_checkpoints - 1],
+            Checkpoints_x7[0:n_checkpoints - 1],
+            Checkpoints_x8[0:n_checkpoints - 1],
+            Checkpoints_x9[0:n_checkpoints - 1],
+            Checkpoints_x10[0:n_checkpoints - 1],
+            Checkpoints_x11[0:n_checkpoints - 1],
+        ),
+            axis=0)
 
         Checkpoints_y = np.concatenate((
-                                        Checkpoints_y1[0:n_checkpoints - 1],
-                                        Checkpoints_y2[0:n_checkpoints - 1],
-                                        Checkpoints_y3[0:n_checkpoints - 1],
-                                        Checkpoints_y4[0:n_checkpoints - 1],
-                                        Checkpoints_y5[0:n_checkpoints - 1],
-                                        Checkpoints_y6[0:n_checkpoints - 1],
-                                        Checkpoints_y7[0:n_checkpoints - 1],
-                                        Checkpoints_y8[0:n_checkpoints - 1],
-                                        Checkpoints_y9[0:n_checkpoints - 1],
-                                        Checkpoints_y10[0:n_checkpoints - 1],
-                                        Checkpoints_y11[0:n_checkpoints - 1],
-                                        ),
-                                        axis=0)
+            Checkpoints_y1[0:n_checkpoints - 1],
+            Checkpoints_y2[0:n_checkpoints - 1],
+            Checkpoints_y3[0:n_checkpoints - 1],
+            Checkpoints_y4[0:n_checkpoints - 1],
+            Checkpoints_y5[0:n_checkpoints - 1],
+            Checkpoints_y6[0:n_checkpoints - 1],
+            Checkpoints_y7[0:n_checkpoints - 1],
+            Checkpoints_y8[0:n_checkpoints - 1],
+            Checkpoints_y9[0:n_checkpoints - 1],
+            Checkpoints_y10[0:n_checkpoints - 1],
+            Checkpoints_y11[0:n_checkpoints - 1],
+        ),
+            axis=0)
 
-        
         Checkpoints_k = np.concatenate((
-                                        Checkpoints_k1[0:n_checkpoints - 1],
-                                        Checkpoints_k2[0:n_checkpoints - 1],
-                                        Checkpoints_k3[0:n_checkpoints - 1],
-                                        Checkpoints_k4[0:n_checkpoints - 1],
-                                        Checkpoints_k5[0:n_checkpoints - 1],
-                                        Checkpoints_k6[0:n_checkpoints - 1],
-                                        Checkpoints_k7[0:n_checkpoints - 1],
-                                        Checkpoints_k8[0:n_checkpoints - 1],
-                                        Checkpoints_k9[0:n_checkpoints - 1],
-                                        Checkpoints_k10[0:n_checkpoints - 1],
-                                        Checkpoints_k11[0:n_checkpoints - 1],
-                                        ),
-                                        axis=0)
+            Checkpoints_k1[0:n_checkpoints - 1],
+            Checkpoints_k2[0:n_checkpoints - 1],
+            Checkpoints_k3[0:n_checkpoints - 1],
+            Checkpoints_k4[0:n_checkpoints - 1],
+            Checkpoints_k5[0:n_checkpoints - 1],
+            Checkpoints_k6[0:n_checkpoints - 1],
+            Checkpoints_k7[0:n_checkpoints - 1],
+            Checkpoints_k8[0:n_checkpoints - 1],
+            Checkpoints_k9[0:n_checkpoints - 1],
+            Checkpoints_k10[0:n_checkpoints - 1],
+            Checkpoints_k11[0:n_checkpoints - 1],
+        ),
+            axis=0)
 
+    elif choice == 'simple_smooth':
+        """
+        A very simple track for MPPI debugging:
+        - Long straights (6 metres)
+        - Very wide corners (R = 3 metres)
+        - Smooth and high-level
+        Useful to troubleshoot throttle peaking, behaviour, dynamics.
+        """
 
+        x_shift_vicon_lab = -1
+        y_shift_vicon_lab = -2.5
+
+        R = 2.5  # large turning radius → nearly no curvature peaks
+        L = 3.0  # long straight
+
+        # parametric angles
+        theta_1 = np.linspace(-np.pi / 2, np.pi / 2, n_checkpoints)  # right turn
+        theta_2 = np.linspace(np.pi / 2, 3 * np.pi / 2, n_checkpoints)  # left turn
+
+        # Build four segments: straight → arc → straight → arc
+
+        # Straight 1: left-to-right, y = 0
+        x1 = np.linspace(0, L, n_checkpoints)
+        y1 = np.zeros(n_checkpoints)
+
+        # Turn 1: bottom → top quarter-circle right side
+        x2 = L + R * np.cos(theta_1)
+        y2 = R + R * np.sin(theta_1)
+
+        # Straight 2: right-to-left, y = 2R
+        x3 = np.linspace(L, 0, n_checkpoints)
+        y3 = np.ones(n_checkpoints) * (2 * R)
+
+        # Turn 2: top → bottom quarter-circle left side
+        x4 = 0 + R * np.cos(theta_2)
+        y4 = R + R * np.sin(theta_2)
+
+        Checkpoints_x = np.concatenate([x1[:-1], x2[:-1], x3[:-1], x4])
+        Checkpoints_y = np.concatenate([y1[:-1], y2[:-1], y3[:-1], y4])
+
+        # curvature
+        k1 = np.zeros(n_checkpoints)
+        k2 = np.ones(n_checkpoints) * (1 / R)
+        k3 = np.zeros(n_checkpoints)
+        k4 = np.ones(n_checkpoints) * (1 / R)
+
+        Checkpoints_k = np.concatenate([k1[:-1], k2[:-1], k3[:-1], k4])
+
+    elif choice == 'simple_smooth_small':
+        """
+        A very simple track for MPPI debugging:
+        - Long straights (6 metres)
+        - Very wide corners (R = 3 metres)
+        - Smooth and high-level
+        Useful to troubleshoot throttle peaking, behaviour, dynamics.
+        """
+        x_shift_vicon_lab = -1.0
+        y_shift_vicon_lab = -2.8
+        R = 0.8  # large turning radius → nearly no curvature peaks
+        L = 4.0  # long straight
+
+        # parametric angles
+        theta_1 = np.linspace(-np.pi / 2, np.pi / 2, n_checkpoints)  # right turn
+        theta_2 = np.linspace(np.pi / 2, 3 * np.pi / 2, n_checkpoints)  # left turn
+
+        # Build four segments: straight → arc → straight → arc
+
+        # Straight 1: left-to-right, y = 0
+        x1 = np.linspace(0, L, n_checkpoints)
+        y1 = np.zeros(n_checkpoints)
+
+        # Turn 1: bottom → top quarter-circle right side
+        x2 = L + R * np.cos(theta_1)
+        y2 = R + R * np.sin(theta_1)
+
+        # Straight 2: right-to-left, y = 2R
+        x3 = np.linspace(L, 0, n_checkpoints)
+        y3 = np.ones(n_checkpoints) * (2 * R)
+
+        # Turn 2: top → bottom quarter-circle left side
+        x4 = 0 + R * np.cos(theta_2)
+        y4 = R + R * np.sin(theta_2)
+
+        Checkpoints_x = np.concatenate([x1[:-1], x2[:-1], x3[:-1], x4])
+        Checkpoints_y = np.concatenate([y1[:-1], y2[:-1], y3[:-1], y4])
+
+        # curvature
+        k1 = np.zeros(n_checkpoints)
+        k2 = np.ones(n_checkpoints) * (1 / R)
+        k3 = np.zeros(n_checkpoints)
+        k4 = np.ones(n_checkpoints) * (1 / R)
+
+        Checkpoints_k = np.concatenate([k1[:-1], k2[:-1], k3[:-1], k4])
+        
+        # rotate track by +90 degrees (swap axes)
+        #Checkpoints_x, Checkpoints_y = Checkpoints_y.copy(), Checkpoints_x.copy()
+        #Checkpoints_k = -Checkpoints_k
+
+    elif choice == 'simple_smooth_flip':
+        """
+        A very simple track for MPPI debugging:
+        - Long straights (6 metres)
+        - Very wide corners (R = 3 metres)
+        - Smooth and high-level
+        Useful to troubleshoot throttle peaking, behaviour, dynamics.
+        """
+
+        x_shift_vicon_lab = -1
+        y_shift_vicon_lab = -2.5
+
+        R = 2.5  # large turning radius → nearly no curvature peaks
+        L = 3.0  # long straight
+
+        # parametric angles
+        theta_1 = np.linspace(-np.pi / 2, np.pi / 2, n_checkpoints)  # right turn
+        theta_2 = np.linspace(np.pi / 2, 3 * np.pi / 2, n_checkpoints)  # left turn
+
+        # Build four segments: straight → arc → straight → arc
+
+        # Straight 1: left-to-right, y = 0
+        x1 = np.linspace(0, L, n_checkpoints)
+        y1 = np.zeros(n_checkpoints)
+
+        # Turn 1: bottom → top quarter-circle right side
+        x2 = L + R * np.cos(theta_1)
+        y2 = R + R * np.sin(theta_1)
+
+        # Straight 2: right-to-left, y = 2R
+        x3 = np.linspace(L, 0, n_checkpoints)
+        y3 = np.ones(n_checkpoints) * (2 * R)
+
+        # Turn 2: top → bottom quarter-circle left side
+        x4 = 0 + R * np.cos(theta_2)
+        y4 = R + R * np.sin(theta_2)
+
+        Checkpoints_x = np.flip(np.concatenate([x1[:-1], x2[:-1], x3[:-1], x4]))
+        Checkpoints_y = np.flip(np.concatenate([y1[:-1], y2[:-1], y3[:-1], y4]))
+
+        # curvature
+        k1 = np.zeros(n_checkpoints)
+        k2 = np.ones(n_checkpoints) * (1 / R)
+        k3 = np.zeros(n_checkpoints)
+        k4 = np.ones(n_checkpoints) * (1 / R)
+
+        Checkpoints_k = np.flip(np.concatenate([k1[:-1], k2[:-1], k3[:-1], k4]))
+
+    elif choice == 'straight_line':
+        """
+        A very simple track for MPPI debugging:
+        - Long straights (20 metres)
+        Useful to troubleshoot throttle peaking, behaviour, dynamics.
+        """
+        x_shift_vicon_lab = -4.0
+        y_shift_vicon_lab = -1.8
+        L = 20.0  # long straight
+
+        # Straight 1: left-to-right, y = 0
+        x1 = np.linspace(0, L, n_checkpoints)
+        y1 = np.zeros(n_checkpoints)
+
+        Checkpoints_x = np.concatenate([x1[:-1]])
+        Checkpoints_y = np.concatenate([y1[:-1]])
+
+        # curvature
+        k1 = np.zeros(n_checkpoints)
+
+        Checkpoints_k = k1[:-1]
 
     else:
         print('Invalid choice of track:')
         print('You selected: ', choice)
 
+
     # fit a cubic spline to the checkpoints
-    #tck, u = interpolate.splprep([Checkpoints_x, Checkpoints_y], s=0)
+    # tck, u = interpolate.splprep([Checkpoints_x, Checkpoints_y], s=0)
     # # from scipy.interpolate import splprep, splev
     # # tck, u = splprep([Checkpoints_x, Checkpoints_y], s=0)  # `s=0` for an exact fit (no smoothing)
 
@@ -753,40 +909,22 @@ def raw_track(choice):
     # # s_fine = np.linspace(0, 1, 1000)  # Parameter values for evaluation
     # # Checkpoints_x, Checkpoints_y = splev(s_fine, tck)
 
-
-
     Checkpoints_s = np.zeros(len(Checkpoints_x))
-    
-    #compute arc length
+
+    # compute arc length
     for ii in range(1, len(Checkpoints_x)):
-        Checkpoints_s[ii] = Checkpoints_s[ii - 1] + np.sqrt((Checkpoints_x[ii] - Checkpoints_x[ii - 1]) ** 2 + (Checkpoints_y[ii] - Checkpoints_y[ii - 1]) ** 2)
-    
+        Checkpoints_s[ii] = Checkpoints_s[ii - 1] + np.sqrt(
+            (Checkpoints_x[ii] - Checkpoints_x[ii - 1]) ** 2 + (Checkpoints_y[ii] - Checkpoints_y[ii - 1]) ** 2)
 
     # Checkpoints_Rx + x_shift_vicon_lab, Checkpoints_Ry + y_shift_vicon_lab, Checkpoints_Rz,
-    return Checkpoints_x + x_shift_vicon_lab, Checkpoints_y + y_shift_vicon_lab, Checkpoints_s , Checkpoints_k
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return Checkpoints_x + x_shift_vicon_lab, Checkpoints_y + y_shift_vicon_lab, Checkpoints_s, Checkpoints_k
 
 
 import casadi
 
-def K_RBF_kernel(x1, x2, lengthscale,n,m):
-    #check if x1 is SX casadi type
+
+def K_RBF_kernel(x1, x2, lengthscale, n, m):
+    # check if x1 is SX casadi type
     if type(x1) == casadi.SX:
         K = casadi.SX.zeros((n, m))
     elif type(x1) == casadi.MX:
@@ -796,12 +934,13 @@ def K_RBF_kernel(x1, x2, lengthscale,n,m):
 
     for ii in range(n):
         for jj in range(m):
-            K[ii, jj] = np.exp((-(x1[ii]-x2[jj])**2/(2*lengthscale**2)))
+            K[ii, jj] = np.exp((-(x1[ii] - x2[jj]) ** 2 / (2 * lengthscale ** 2)))
     return K
 
-def K_matern2_kernel(x1, x2, lengthscale,n,m):
+
+def K_matern2_kernel(x1, x2, lengthscale, n, m):
     sqrt5 = np.sqrt(5)
-    #check if x1 is SX casadi type
+    # check if x1 is SX casadi type
     if type(x1) == casadi.SX:
         K = casadi.SX.zeros((n, m))
         abs = lambda x: casadi.fabs(x)
@@ -816,15 +955,9 @@ def K_matern2_kernel(x1, x2, lengthscale,n,m):
 
     for ii in range(n):
         for jj in range(m):
-            r = abs((x1[ii]-x2[jj])) / lengthscale
-            K[ii, jj] = (1 + sqrt5 * r + (5.0 / 3.0) * r**2) * np.exp(-sqrt5 * r)
+            r = abs((x1[ii] - x2[jj])) / lengthscale
+            K[ii, jj] = (1 + sqrt5 * r + (5.0 / 3.0) * r ** 2) * np.exp(-sqrt5 * r)
     return K
-
-
-
-
-
-
 
 
 # do the same for the derivatives
@@ -832,56 +965,50 @@ def K_RBF_kernel_derivative(x1, x2, lengthscale):
     K = np.zeros((len(x1), len(x2)))
     for ii in range(len(x1)):
         for jj in range(len(x2)):
-            K[ii, jj] = (x1[ii]-x2[jj]) * np.exp((-(x1[ii]-x2[jj])**2/(2*lengthscale**2)))/(lengthscale**2)
+            K[ii, jj] = (x1[ii] - x2[jj]) * np.exp((-(x1[ii] - x2[jj]) ** 2 / (2 * lengthscale ** 2))) / (
+                        lengthscale ** 2)
     return K
 
 
-def kernelized_path(x_star, x , y,lengthscale,lambda_val):
-    #K_xx = K_RBF_kernel(x, x, lengthscale)
-    fixed_matrix, s_normalized = generate_fixed_path_quantities(lengthscale, lambda_val,len(x))
+def kernelized_path(x_star, x, y, lengthscale, lambda_val):
+    # K_xx = K_RBF_kernel(x, x, lengthscale)
+    fixed_matrix, s_normalized = generate_fixed_path_quantities(lengthscale, lambda_val, len(x))
     right_side_vector_block = fixed_matrix @ y
-    
-    # evalaute the kernelized function in the query point (here we assume that x_star is a single value)
-    #K_x_star = K_RBF_kernel(x_star, x, lengthscale,len(x_star),len(x))
-    K_x_star = K_matern2_kernel(x_star, x, lengthscale,len(x_star),len(x))
 
+    # evalaute the kernelized function in the query point (here we assume that x_star is a single value)
+    # K_x_star = K_RBF_kernel(x_star, x, lengthscale,len(x_star),len(x))
+    K_x_star = K_matern2_kernel(x_star, x, lengthscale, len(x_star), len(x))
 
     # evalaute products
     y_star = K_x_star @ right_side_vector_block
 
     return y_star
 
-def generate_fixed_path_quantities(lengthscale, lambda_val,n_points):
+
+def generate_fixed_path_quantities(lengthscale, lambda_val, n_points):
     normalized_s = np.linspace(0.0, 1.0, n_points)
     # K_xx = K_RBF_kernel(normalized_s, normalized_s, lengthscale,n_points,n_points)
-    K_xx = K_matern2_kernel(normalized_s, normalized_s, lengthscale,n_points,n_points)
-    fixed_matrix = np.linalg.inv(K_xx + lambda_val * np.eye(len(normalized_s))) 
+    K_xx = K_matern2_kernel(normalized_s, normalized_s, lengthscale, n_points, n_points)
+    fixed_matrix = np.linalg.inv(K_xx + lambda_val * np.eye(len(normalized_s)))
     return fixed_matrix, normalized_s
 
 
-
-
-
 def generate_path_data(track_choice):
-
     # # --- set up track ---
-    Checkpoints_x, Checkpoints_y, Checkpoints_s,\
-    Checkpoints_k = raw_track(track_choice) # Checkpoints_Rx , Checkpoints_Ry , Checkpoints_Rz,
-
-
+    Checkpoints_x, Checkpoints_y, Checkpoints_s, \
+        Checkpoints_k = raw_track(track_choice)  # Checkpoints_Rx , Checkpoints_Ry , Checkpoints_Rz,
 
     # add a loop before and a loop afterwards to generate extra reference for the MPC
-    x_4_local_path = np.concatenate((Checkpoints_x[:-1],Checkpoints_x, Checkpoints_x[1:]))
-    y_4_local_path = np.concatenate((Checkpoints_y[:-1],Checkpoints_y, Checkpoints_y[1:]))
-    s_4_local_path = np.concatenate((Checkpoints_s[:-1] -Checkpoints_s[-1],Checkpoints_s, Checkpoints_s[1:] + Checkpoints_s[-1]))
+    x_4_local_path = np.concatenate((Checkpoints_x[:-1], Checkpoints_x, Checkpoints_x[1:]))
+    y_4_local_path = np.concatenate((Checkpoints_y[:-1], Checkpoints_y, Checkpoints_y[1:]))
+    s_4_local_path = np.concatenate(
+        (Checkpoints_s[:-1] - Checkpoints_s[-1], Checkpoints_s, Checkpoints_s[1:] + Checkpoints_s[-1]))
 
     # R_x_4_local_path = np.concatenate((Checkpoints_Rx[:-1],Checkpoints_Rx, Checkpoints_Rx[1:]))
     # R_y_4_local_path = np.concatenate((Checkpoints_Ry[:-1],Checkpoints_Ry, Checkpoints_Ry[1:]))
     # R_z_4_local_path = np.concatenate((Checkpoints_Rz[:-1],Checkpoints_Rz, Checkpoints_Rz[1:]))
 
-    k_4_local_path = np.concatenate((Checkpoints_k[:-1],Checkpoints_k, Checkpoints_k[1:]))
-    
-
+    k_4_local_path = np.concatenate((Checkpoints_k[:-1], Checkpoints_k, Checkpoints_k[1:]))
 
     # smooth out the R localtion
     # window = 21
@@ -894,13 +1021,12 @@ def generate_path_data(track_choice):
     # R_z_4_local_path = sliding_window_smooth(R_z_4_local_path, window)
 
     window = 5
-    k_vals_global_path =  sliding_window_smooth(k_4_local_path, window)
-    k_vals_global_path =  sliding_window_smooth(k_vals_global_path, window)
-
+    k_vals_global_path = sliding_window_smooth(k_4_local_path, window)
+    k_vals_global_path = sliding_window_smooth(k_vals_global_path, window)
 
     # now use the trajectory to generate the smoothed track
     Ds_back = 1
-    Ds_forward = 20    # these distances are before and after 1 lap 
+    Ds_forward = 20  # these distances are before and after 1 lap
 
     # #     R_x_vals_global_path,\
     # # R_y_vals_global_path,\
@@ -909,29 +1035,24 @@ def generate_path_data(track_choice):
     # # R_y_4_local_path,\
     # # R_z_4_local_path,\
 
-    s_vals_global_path,\
-    x_vals_global_path,\
-    y_vals_global_path,\
-    s_4_local_path,\
-    x_4_local_path,\
-    y_4_local_path,\
-    k_vals_global_path,\
-    k_4_local_path = generate_track(x_4_local_path, y_4_local_path, s_4_local_path, Ds_back, Ds_forward,\
-                                      k_vals_global_path) # remove last point to avoid overlap     ## R_x_4_local_path,R_y_4_local_path,R_z_4_local_path,
-
+    s_vals_global_path, \
+        x_vals_global_path, \
+        y_vals_global_path, \
+        s_4_local_path, \
+        x_4_local_path, \
+        y_4_local_path, \
+        k_vals_global_path, \
+        k_4_local_path = generate_track(x_4_local_path, y_4_local_path, s_4_local_path, Ds_back, Ds_forward, \
+                                        k_vals_global_path)  # remove last point to avoid overlap     ## R_x_4_local_path,R_y_4_local_path,R_z_4_local_path,
 
     # genrate derivatives of the path
-    dx_ds, dy_ds, d2x_ds2, d2y_ds2 = produce_ylabels_devs(s_4_local_path,x_4_local_path,y_4_local_path)
+    dx_ds, dy_ds, d2x_ds2, d2y_ds2 = produce_ylabels_devs(s_4_local_path, x_4_local_path, y_4_local_path)
 
     # R_x_vals_global_path, R_y_vals_global_path, R_z_vals_global_path,\
     # R_x_4_local_path, R_y_4_local_path, R_z_4_local_path,\
-    return s_vals_global_path, x_vals_global_path, y_vals_global_path, s_4_local_path, x_4_local_path, y_4_local_path,\
-           dx_ds, dy_ds, d2x_ds2, d2y_ds2,\
-            k_vals_global_path, k_4_local_path
-
-
-
-
+    return s_vals_global_path, x_vals_global_path, y_vals_global_path, s_4_local_path, x_4_local_path, y_4_local_path, \
+        dx_ds, dy_ds, d2x_ds2, d2y_ds2, \
+        k_vals_global_path, k_4_local_path
 
 
 def sliding_window_smooth(data, window_size):
@@ -949,11 +1070,8 @@ def sliding_window_smooth(data, window_size):
     return smoothed_data
 
 
-
-
-
-def produce_ylabels_devs(s_4_local_path,x_4_local_path,y_4_local_path):
-            # --- evaluate first derivatives ---
+def produce_ylabels_devs(s_4_local_path, x_4_local_path, y_4_local_path):
+    # --- evaluate first derivatives ---
     # we now also need to specify the curve derivatives
     ds = np.diff(s_4_local_path)
     dx = np.diff(x_4_local_path)
@@ -965,7 +1083,7 @@ def produce_ylabels_devs(s_4_local_path,x_4_local_path,y_4_local_path):
     # make sure the norm of the dev vector is 1
     norm_dev = np.sqrt(dev_x ** 2 + dev_y ** 2)
 
-    #renormalize to make shure the norm is 1
+    # renormalize to make shure the norm is 1
     dev_x_renormalized = dev_x / norm_dev
     dev_y_renormalized = dev_y / norm_dev
 
@@ -995,41 +1113,37 @@ def produce_ylabels_devs(s_4_local_path,x_4_local_path,y_4_local_path):
     return dx_ds, dy_ds, d2x_ds2, d2y_ds2
 
 
-
 if __name__ == '__main__':
 
-    # testing by plotting 
+    # testing by plotting
     import matplotlib.pyplot as plt
 
     track_choice = 'racetrack_vicon_2'
 
     # # --- set up track ---
-    Checkpoints_x, Checkpoints_y, Checkpoints_s,\
-    Checkpoints_k = raw_track(track_choice)
+    Checkpoints_x, Checkpoints_y, Checkpoints_s, \
+        Checkpoints_k = raw_track(track_choice)
 
-    s_vals_global_path, x_vals_global_path, y_vals_global_path, s_4_local_path, x_4_local_path, y_4_local_path,\
-    dx_ds, dy_ds, d2x_ds2, d2y_ds2,\
-    k_vals_global_path, k_4_local_path = generate_path_data(track_choice)
-
+    s_vals_global_path, x_vals_global_path, y_vals_global_path, s_4_local_path, x_4_local_path, y_4_local_path, \
+        dx_ds, dy_ds, d2x_ds2, d2y_ds2, \
+        k_vals_global_path, k_4_local_path = generate_path_data(track_choice)
 
     # plot raw track
     plt.figure()
-    plt.plot(x_4_local_path, y_4_local_path, 'gray',label='raw track 4 local path',linewidth=5)
-    plt.plot(x_vals_global_path, y_vals_global_path, 'k',label='raw track 4 local path',linewidth=1)
+    plt.plot(x_4_local_path, y_4_local_path, 'gray', label='raw track 4 local path', linewidth=5)
+    plt.plot(x_vals_global_path, y_vals_global_path, 'k', label='raw track 4 local path', linewidth=1)
     plt.axes().set_aspect('equal', 'datalim')
     plt.legend()
-
 
     # plot curvature and heading angle
     # evaluate heading angle
     track_heading_angle_global = np.arctan2(dy_ds, dx_ds)
 
-
     figure, ax = plt.subplots(2)
-    #plot curvature
-    ax[0].plot(s_4_local_path, k_4_local_path, 'k',label='curvature 4 local path',linewidth=2)
+    # plot curvature
+    ax[0].plot(s_4_local_path, k_4_local_path, 'k', label='curvature 4 local path', linewidth=2)
     # plot heading angle
-    ax[1].plot(s_4_local_path, track_heading_angle_global, 'purple',label='heading angle global path',linewidth=2)
+    ax[1].plot(s_4_local_path, track_heading_angle_global, 'purple', label='heading angle global path', linewidth=2)
 
     # set legend title axis labels
     ax[0].legend()
@@ -1041,22 +1155,16 @@ if __name__ == '__main__':
 
     plt.show()
 
-
-
-
-
-
     # chose sub interval to fit
     # difficult bend is at 8 m
-    start_point = 6 # m
-    length_path = 4 # m (full rack length is 41.11m)
+    start_point = 6  # m
+    length_path = 4  # m (full rack length is 41.11m)
 
     # set kernel parameters
-    alpha = 0.0001**2
-    n_points_kernelized = 41 # for full track
-    length_scale = 1.3/n_points_kernelized #1/n_points_kernelized #4 * 1/n_points_kernelized # length scale is n times the distance between two points
+    alpha = 0.0001 ** 2
+    n_points_kernelized = 41  # for full track
+    length_scale = 1.3 / n_points_kernelized  # 1/n_points_kernelized #4 * 1/n_points_kernelized # length scale is n times the distance between two points
     # was 0.1
-
 
     # extract path interval
     mask = (s_4_local_path >= start_point) & (s_4_local_path <= start_point + length_path)
@@ -1066,41 +1174,47 @@ if __name__ == '__main__':
     s_data_points_fit = s_4_local_path[indexes]
     k_points_fit = k_4_local_path[indexes]
 
-    #x_data_points_fit = x_4_local_path[indexes]
-    #y_data_points_fit = y_4_local_path[indexes]
-
+    # x_data_points_fit = x_4_local_path[indexes]
+    # y_data_points_fit = y_4_local_path[indexes]
 
     # Fit the model
     # resample with the specified number of points for kenerlized regression
 
     s_4_kernelized = np.linspace(s_data_points_fit[0], s_data_points_fit[-1], n_points_kernelized)
-    #x_4_kernelized = np.interp(s_4_kernelized, s_data_points_fit, x_data_points_fit)
-    #y_4_kernelized = np.interp(s_4_kernelized, s_data_points_fit, y_data_points_fit)
+    # x_4_kernelized = np.interp(s_4_kernelized, s_data_points_fit, x_data_points_fit)
+    # y_4_kernelized = np.interp(s_4_kernelized, s_data_points_fit, y_data_points_fit)
     k_4_kernelized = np.interp(s_4_kernelized, s_data_points_fit, k_4_local_path[indexes])
-
-
 
     # --- now evalaute the path using the custom made kernelized linear regression ---
     s_4_kernelized_eval_normalized = np.linspace(0, 1, n_points_kernelized)
 
-    krr_x_output_custom  = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , x_4_kernelized ,length_scale, alpha)
-    krr_y_output_custom  = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , y_4_kernelized ,length_scale, alpha)
-    
+    krr_x_output_custom = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, x_4_kernelized,
+                                          length_scale, alpha)
+    krr_y_output_custom = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, y_4_kernelized,
+                                          length_scale, alpha)
+
     # evaluate first derivatives
-    krr_x_output_custom_d = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , dev_x_kernelized ,length_scale, alpha)
-    krr_y_output_custom_d = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , dev_y_kernelized ,length_scale, alpha)
-    
+    krr_x_output_custom_d = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, dev_x_kernelized,
+                                            length_scale, alpha)
+    krr_y_output_custom_d = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, dev_y_kernelized,
+                                            length_scale, alpha)
+
     # evaluate second derivatives
-    krr_x_output_custom_dd = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , dev2_x_kernelized ,length_scale, alpha)
-    krr_y_output_custom_dd = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , dev2_y_kernelized ,length_scale, alpha)
+    krr_x_output_custom_dd = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized,
+                                             dev2_x_kernelized, length_scale, alpha)
+    krr_y_output_custom_dd = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized,
+                                             dev2_y_kernelized, length_scale, alpha)
 
     # evaluate radius of curvature
-    R_vec_data_krr_custom = 1 / np.sqrt(krr_x_output_custom_dd ** 2 + krr_y_output_custom_dd ** 2 + (1/max_R)**2)
+    R_vec_data_krr_custom = 1 / np.sqrt(krr_x_output_custom_dd ** 2 + krr_y_output_custom_dd ** 2 + (1 / max_R) ** 2)
 
     # now fit the x y z R locations
-    krr_Rx_output_custom  = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , R_x_4_kernelized ,length_scale, alpha)
-    krr_Ry_output_custom  = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , R_y_4_kernelized ,length_scale, alpha)
-    krr_Rz_output_custom  = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , R_z_4_kernelized ,length_scale, alpha)
+    krr_Rx_output_custom = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, R_x_4_kernelized,
+                                           length_scale, alpha)
+    krr_Ry_output_custom = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, R_y_4_kernelized,
+                                           length_scale, alpha)
+    krr_Rz_output_custom = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, R_z_4_kernelized,
+                                           length_scale, alpha)
 
     # # add kernelized linear regression to the plot
     # axs_R[0].plot(s_data_points_fit, krr_Rx_output_custom, 'violet',linestyle = '--',label='kernelized linear regression Rx')
@@ -1114,21 +1228,13 @@ if __name__ == '__main__':
     # # add plot ocentre of curvature
     # ax_3d_path.plot(krr_Rx_output_custom, krr_Ry_output_custom, krr_Rz_output_custom, 'violet',linestyle = '--',label='centre of curvature kernelized linear regression')
 
-
-
-
-
     # curvature from the kernelized linear regression
-    k_vec_from_kernelized = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized , k_4_kernelized ,length_scale, alpha)
+    k_vec_from_kernelized = kernelized_path(s_4_kernelized_eval_normalized, s_4_kernelized_normalized, k_4_kernelized,
+                                            length_scale, alpha)
 
-
-
-
-
-    
     # --- recreate path by integrating the curvature data ---
     discretization = len(k_vec_from_kernelized)
-    #ds_for_k_reconstruction = np.linspace(0, 1, len(k_vec_from_kernelized))
+    # ds_for_k_reconstruction = np.linspace(0, 1, len(k_vec_from_kernelized))
     track_heading_vec = np.zeros(len(k_vec_from_kernelized))
     track_x_from_heading = np.zeros(len(k_vec_from_kernelized))
     track_y_from_heading = np.zeros(len(k_vec_from_kernelized))
@@ -1138,94 +1244,74 @@ if __name__ == '__main__':
     track_x_from_heading[0] = x_data_points_fit[0]
     track_y_from_heading[0] = y_data_points_fit[0]
 
-    for ii in range(1,discretization):
-        ds = s_data_points_fit[ii] - s_data_points_fit[ii-1]
-        track_heading_vec[ii] = track_heading_vec[ii-1] + k_vec_from_kernelized[ii] * ds 
-        track_x_from_heading[ii] = track_x_from_heading[ii-1] + np.cos(track_heading_vec[ii-1]) * ds 
-        track_y_from_heading[ii] = track_y_from_heading[ii-1] + np.sin(track_heading_vec[ii-1]) * ds
+    for ii in range(1, discretization):
+        ds = s_data_points_fit[ii] - s_data_points_fit[ii - 1]
+        track_heading_vec[ii] = track_heading_vec[ii - 1] + k_vec_from_kernelized[ii] * ds
+        track_x_from_heading[ii] = track_x_from_heading[ii - 1] + np.cos(track_heading_vec[ii - 1]) * ds
+        track_y_from_heading[ii] = track_y_from_heading[ii - 1] + np.sin(track_heading_vec[ii - 1]) * ds
 
     # ------------------------------
     # plot the curvature info
     figure, ax = plt.subplots(1)
-    ax.plot(s_4_local_path, k_4_local_path, 'k',label='curvature from checkpoints')
-    ax.plot(s_data_points_fit, k_vec_from_kernelized, 'violet',label='curvature from kernelized linear regression')
+    ax.plot(s_4_local_path, k_4_local_path, 'k', label='curvature from checkpoints')
+    ax.plot(s_data_points_fit, k_vec_from_kernelized, 'violet', label='curvature from kernelized linear regression')
     ax.legend()
-
-
-
-
-
-
-
-
 
     # plot the cheby path
     plt.figure()
     # # plot the original path
     # plt.plot(x_vals_global_path, y_vals_global_path, 'cadetblue',linestyle='--',label='global path raw track',linewidth=3)
 
-
     # plot built in curve
-    plt.plot(x_data_points_fit, y_data_points_fit, 'k',linestyle='--',linewidth=3,label='data points',zorder = 20,alpha = 0.4)
+    plt.plot(x_data_points_fit, y_data_points_fit, 'k', linestyle='--', linewidth=3, label='data points', zorder=20,
+             alpha=0.4)
 
     # plot custom curve
-    plt.plot(x_custom, y_custom, 'purple',linestyle=':',linewidth=3,label='custom cheby path')
+    plt.plot(x_custom, y_custom, 'purple', linestyle=':', linewidth=3, label='custom cheby path')
 
-    #plot overall tack
-    plt.plot(x_4_local_path, y_4_local_path, 'gray',label='global path',linewidth=5,zorder=0)
+    # plot overall tack
+    plt.plot(x_4_local_path, y_4_local_path, 'gray', label='global path', linewidth=5, zorder=0)
 
     # plot kernelized linear regression
-    plt.plot(krr_x_output,krr_y_output , 'green',linestyle = '--',label='kernelized linear regression x')
+    plt.plot(krr_x_output, krr_y_output, 'green', linestyle='--', label='kernelized linear regression x')
 
     # plot kernelized linear regression custom
-    plt.plot(krr_x_output_custom,krr_y_output_custom , 'violet',linestyle = '--',label='kernelized linear regression custom x',zorder = 21)
+    plt.plot(krr_x_output_custom, krr_y_output_custom, 'violet', linestyle='--',
+             label='kernelized linear regression custom x', zorder=21)
 
     # plot trajectory of pure pursuit controller
-    plt.plot(x_4_local_path, y_4_local_path, 'yellowgreen',label='pure pursuit controller trajectory')
+    plt.plot(x_4_local_path, y_4_local_path, 'yellowgreen', label='pure pursuit controller trajectory')
 
     # plot location of R
-    plt.plot(krr_Rx_output_custom, krr_Ry_output_custom, 'or',label='centre of curvature')
+    plt.plot(krr_Rx_output_custom, krr_Ry_output_custom, 'or', label='centre of curvature')
 
     # plot reconstruction from curvature info
-    plt.plot(track_x_from_heading, track_y_from_heading, 'blue',label='reconstructed path from curvature info')
-
+    plt.plot(track_x_from_heading, track_y_from_heading, 'blue', label='reconstructed path from curvature info')
 
     plt.legend()
     plt.show()
 
-
-
     # plot first derivatives
     figure, ax = plt.subplots(3)
 
-    #evaluate norm of first derivatives
+    # evaluate norm of first derivatives
     norm_dev_data = np.sqrt(dx_ds ** 2 + dy_ds ** 2)
     norm_dev__custom_k = np.sqrt(krr_x_output_custom_d ** 2 + krr_y_output_custom_d ** 2)
 
-    #plot norm of first derivatives
-    ax[0].plot(s_4_local_path, norm_dev_data, 'k',label='norm of first derivatives from data')
-    ax[0].plot(s_data_points_fit, norm_dev__custom_k, 'violet',label='norm of first derivatives from custom kernelized linear regression')
+    # plot norm of first derivatives
+    ax[0].plot(s_4_local_path, norm_dev_data, 'k', label='norm of first derivatives from data')
+    ax[0].plot(s_data_points_fit, norm_dev__custom_k, 'violet',
+               label='norm of first derivatives from custom kernelized linear regression')
 
-    #plot first derivatives
-    ax[1].plot(s_4_local_path, dx_ds, 'k',label='dev_x from data')
-    ax[2].plot(s_4_local_path, dy_ds, 'k',label='dev_y from data')
+    # plot first derivatives
+    ax[1].plot(s_4_local_path, dx_ds, 'k', label='dev_x from data')
+    ax[2].plot(s_4_local_path, dy_ds, 'k', label='dev_y from data')
 
-    #plot first derivatives custom
-    ax[1].plot(s_data_points_fit, krr_x_output_custom_d, 'violet',label='dev_x from custom kernelized linear regression')
-    ax[2].plot(s_data_points_fit, krr_y_output_custom_d, 'violet',label='dev_y from custom kernelized linear regression')
-
-
-
-
-
-
-
-
-
-
-
-
-
+    # plot first derivatives custom
+    ax[1].plot(s_data_points_fit, krr_x_output_custom_d, 'violet',
+               label='dev_x from custom kernelized linear regression')
+    ax[2].plot(s_data_points_fit, krr_y_output_custom_d, 'violet',
+               label='dev_y from custom kernelized linear regression')
 
     # plot radius of curvature
     figure, ax = plt.subplots(3)
@@ -1234,62 +1320,61 @@ if __name__ == '__main__':
     # ax[0].plot(s_4_local_path[:-2], R_vec_data, 'k',label='radius of curvature from data')
 
     # plot custom R
-    ax[0].plot(s_cheby, R_vec, 'r',label='radius of curvature from custom cheby 2n dev')
+    ax[0].plot(s_cheby, R_vec, 'r', label='radius of curvature from custom cheby 2n dev')
 
     # #plot spline R
-    ax[0].plot(s_4_local_path, R_vec_data_splines, 'k',label='radius of curvature from data (splines)')
+    ax[0].plot(s_4_local_path, R_vec_data_splines, 'k', label='radius of curvature from data (splines)')
 
     # plot cheby R
-    ax[0].plot(s_cheby, R_cheby, 'b',label='radius of curvature from cheby separate polynomials for 2nddevs')
+    ax[0].plot(s_cheby, R_cheby, 'b', label='radius of curvature from cheby separate polynomials for 2nddevs')
 
     # # plot data used to fit the cheby polynomials
     # ax[0].plot(s_data_points_fit, R_vec_data[indexes], 'orange',linestyle = ':',label='data points for cheby fit')
 
     # plot kernelized linear regression R
-    ax[0].plot(s_data_points_fit, R_vec_data_krr, 'darkgreen',linestyle = '--',label='kernelized linear regression R')
+    ax[0].plot(s_data_points_fit, R_vec_data_krr, 'darkgreen', linestyle='--', label='kernelized linear regression R')
 
     # plot kernelized linear regression custom R
-    ax[0].plot(s_data_points_fit, R_vec_data_krr_custom, 'violet',linestyle = '--',label='kernelized linear regression custom R')
-
+    ax[0].plot(s_data_points_fit, R_vec_data_krr_custom, 'violet', linestyle='--',
+               label='kernelized linear regression custom R')
 
     ax[0].set_xlabel('s [m]')
     ax[0].set_ylabel('R [m]')
     ax[0].legend()
 
     # plot in two subplots the second derivatives data
-    ax[1].plot(s_4_local_path, d2x_ds2, 'k',label='dev2_x from data')
-    ax[2].plot(s_4_local_path, d2y_ds2, 'k',label='dev2_y from data')
+    ax[1].plot(s_4_local_path, d2x_ds2, 'k', label='dev2_x from data')
+    ax[2].plot(s_4_local_path, d2y_ds2, 'k', label='dev2_y from data')
     # plot the re-evalauted data from cheby
-    ax[1].plot(s_cheby, x_Cdev2_devs, 'r',label='dev2_x from cheby')
-    ax[2].plot(s_cheby, y_Cdev2_devs, 'r',label='dev2_y from cheby')
+    ax[1].plot(s_cheby, x_Cdev2_devs, 'r', label='dev2_x from cheby')
+    ax[2].plot(s_cheby, y_Cdev2_devs, 'r', label='dev2_y from cheby')
 
     # plot the re-evalauted data from cheby coeff2
-    ax[1].plot(s_cheby, x_Cdev2_from_coeff2, 'b',label='dev2_x from cheby coeff2')
-    ax[2].plot(s_cheby, y_Cdev2_from_coeff2, 'b',label='dev2_y from cheby coeff2')
+    ax[1].plot(s_cheby, x_Cdev2_from_coeff2, 'b', label='dev2_x from cheby coeff2')
+    ax[2].plot(s_cheby, y_Cdev2_from_coeff2, 'b', label='dev2_y from cheby coeff2')
 
     # plot the kernelized linear regression
-    ax[1].plot(s_data_points_fit, krr_x_output_2dev, 'g',label='kernelized linear regression dev2_x')
-    ax[2].plot(s_data_points_fit, krr_y_output_2dev, 'g',label='kernelized linear regression dev2_y')
+    ax[1].plot(s_data_points_fit, krr_x_output_2dev, 'g', label='kernelized linear regression dev2_x')
+    ax[2].plot(s_data_points_fit, krr_y_output_2dev, 'g', label='kernelized linear regression dev2_y')
 
     # plot the custom kernelized linear regression
-    ax[1].plot(s_data_points_fit, krr_x_output_custom_dd, 'violet',linestyle = '--',label='kernelized linear regression custom dev2_x')
-    ax[2].plot(s_data_points_fit, krr_y_output_custom_dd, 'violet', linestyle = '--',label='kernelized linear regression custom dev2_y')
+    ax[1].plot(s_data_points_fit, krr_x_output_custom_dd, 'violet', linestyle='--',
+               label='kernelized linear regression custom dev2_x')
+    ax[2].plot(s_data_points_fit, krr_y_output_custom_dd, 'violet', linestyle='--',
+               label='kernelized linear regression custom dev2_y')
 
     # # plot smoothed data
     # ax[1].plot(s_4_local_path, d2x_ds2_smoothed, 'orange',label='dev2_x from smoothed data')
     # ax[2].plot(s_4_local_path, d2y_ds2_smoothed, 'orange',label='dev2_y from smoothed data')
 
     # plot the s interval of the global path as two vertical lines
-    ax[0].axvline(x=s_vals_global_path[0],color='gray',linestyle='--')
-    ax[0].axvline(x=s_vals_global_path[-1],color='gray',linestyle='--')
+    ax[0].axvline(x=s_vals_global_path[0], color='gray', linestyle='--')
+    ax[0].axvline(x=s_vals_global_path[-1], color='gray', linestyle='--')
     # also on ax 1 and 2
-    ax[1].axvline(x=s_vals_global_path[0],color='gray',linestyle='--')
-    ax[1].axvline(x=s_vals_global_path[-1],color='gray',linestyle='--')
-    ax[2].axvline(x=s_vals_global_path[0],color='gray',linestyle='--')
-    ax[2].axvline(x=s_vals_global_path[-1],color='gray',linestyle='--')
-
-
-
+    ax[1].axvline(x=s_vals_global_path[0], color='gray', linestyle='--')
+    ax[1].axvline(x=s_vals_global_path[-1], color='gray', linestyle='--')
+    ax[2].axvline(x=s_vals_global_path[0], color='gray', linestyle='--')
+    ax[2].axvline(x=s_vals_global_path[-1], color='gray', linestyle='--')
 
     ax[1].set_xlabel('s [m]')
     ax[1].set_ylabel('dev2 x')
@@ -1297,8 +1382,6 @@ if __name__ == '__main__':
     ax[2].set_xlabel('s [m]')
     ax[2].set_ylabel('dev2 y')
     ax[2].legend()
-
-
 
     plt.show()
 

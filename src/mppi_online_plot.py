@@ -2,10 +2,23 @@
 import matplotlib.pyplot as plt
 from collections import deque
 import numpy as np
+import os
 
 class OnlineMppiPlotter:
-    def __init__(self, max_history=200):
+    def __init__(self, max_history=200,
+                 save_dir=None,
+                 save_every=1,
+                 file_prefix="mppi_diag"):
         self.max_history = max_history
+
+        # --- NEW: saving options ---
+        self.save_dir = save_dir
+        self.save_every = int(save_every)
+        self.file_prefix = file_prefix
+
+        if self.save_dir is not None:
+            os.makedirs(self.save_dir, exist_ok=True)
+        # ----------------------------
 
         self.t_hist = deque(maxlen=max_history)
         self.u_throttle_hist = deque(maxlen=max_history)
@@ -19,15 +32,18 @@ class OnlineMppiPlotter:
         self._step    = 0
 
         plt.ion()
-        self.fig, self.axes = plt.subplots(2, 2, figsize=(12, 8))
-        self.ax_u      = self.axes[0, 0]
-        self.ax_duNeff = self.axes[0, 1]
-        self.ax_cloud  = self.axes[1, 0]
-        self.ax_hist   = self.axes[1, 1]
+        self.fig, self.axes = plt.subplots(2, 2, figsize=(12, 12))
 
-    def update(self, u0, Neff, cost_min, u0_samples=None, weights=None, t=None):
+        self.ax_u = self.axes[0, 0]
+        # self.ax_duNeff = self.axes[0, 1]
+        self.ax_cloud = self.axes[1, 0]
+        self.ax_hist = self.axes[1, 1]
+        self.ax_seq = self.axes[0, 1]
+
+
+    def update(self, u0, Neff, cost_min, u0_samples=None, weights=None, t=None, mean_u=None, best_u=None):
         """
-        u0:          np.array shape (2,) -> [dth, dst]
+        u0:          np.array shape (2,) -> [th, st]
         Neff:        float
         cost_min:    float
         u0_samples:  np.array shape (K, 2) or None
@@ -58,20 +74,29 @@ class OnlineMppiPlotter:
         self.cost_min_hist.append(cost_min)
 
         self._plot_controls()
-        self._plot_du_and_Neff()
+        # self._plot_du_and_Neff()
         self._plot_cloud(u0_samples, weights, u0)
         self._plot_hist(u0_samples, weights, u0)
+        self._plot_action_sequence(mean_u, best_u)
 
         self.fig.tight_layout()
+
+        if self.save_dir is not None and (t % self.save_every == 0):
+            fname = f"{self.file_prefix}_step_{t:05d}.png"
+            fpath = os.path.join(self.save_dir, fname)
+            # Make sure the canvas is up to date
+            self.fig.canvas.draw()
+            self.fig.savefig(fpath, dpi=150, bbox_inches="tight")
+
         plt.pause(0.001)
 
     def _plot_controls(self):
         self.ax_u.clear()
-        self.ax_u.set_title("u0 (rates) vs time")
-        self.ax_u.plot(self.t_hist, self.u_throttle_hist, label="dth")
-        self.ax_u.plot(self.t_hist, self.u_steer_hist,    label="dst")
+        self.ax_u.set_title("u0 vs time")
+        self.ax_u.plot(self.t_hist, self.u_throttle_hist, label="th")
+        self.ax_u.plot(self.t_hist, self.u_steer_hist,    label="st")
         self.ax_u.set_xlabel("step")
-        self.ax_u.set_ylabel("rate command")
+        self.ax_u.set_ylabel("command")
         self.ax_u.grid(True)
         self.ax_u.legend()
 
@@ -90,8 +115,8 @@ class OnlineMppiPlotter:
         self.ax_duNeff.set_title("|Δu0| and N_eff")
 
         # primary plot (Δu0)
-        self.ax_duNeff.plot(self.t_hist, np.abs(self.du_throttle_hist), label="|Δdth|")
-        self.ax_duNeff.plot(self.t_hist, np.abs(self.du_steer_hist), label="|Δdst|")
+        self.ax_duNeff.plot(self.t_hist, np.abs(self.du_throttle_hist), label="|Δth|")
+        self.ax_duNeff.plot(self.t_hist, np.abs(self.du_steer_hist), label="|Δst|")
         self.ax_duNeff.set_xlabel("step")
         self.ax_duNeff.set_ylabel("|Δu0|")
         self.ax_duNeff.grid(True)
@@ -110,8 +135,8 @@ class OnlineMppiPlotter:
     def _plot_cloud(self, u0_samples, weights, u0):
         self.ax_cloud.clear()
         self.ax_cloud.set_title("Sample cloud (current step)")
-        self.ax_cloud.set_xlabel("steering rate dst")
-        self.ax_cloud.set_ylabel("throttle rate dth")
+        self.ax_cloud.set_xlabel("steering st")
+        self.ax_cloud.set_ylabel("throttle th")
         self.ax_cloud.grid(True)
 
         if u0_samples is not None and weights is not None:
@@ -158,15 +183,39 @@ class OnlineMppiPlotter:
         steer = u0_samples[:, 1]
 
         # Primary histogram
-        self.ax_hist.hist(throttle, bins=30, weights=weights, alpha=0.5, label="dth")
+        self.ax_hist.hist(throttle, bins=30, weights=weights, alpha=0.5, label="th")
         self.ax_hist.axvline(u0[0], linestyle="--")
-        self.ax_hist.set_xlabel("dth")
+        self.ax_hist.set_xlabel("th")
 
         # Secondary histogram on x-axis (top)
         self.ax_hist_twin = self.ax_hist.twiny()
-        self.ax_hist_twin.hist(steer, bins=30, weights=weights, alpha=0.3)
-        self.ax_hist_twin.axvline(u0[1], linestyle="--")
-        self.ax_hist_twin.set_xlabel("dst")
+        self.ax_hist_twin.hist(steer, bins=30, weights=weights, alpha=0.3, label="st", color="green")
+        self.ax_hist_twin.axvline(u0[1], linestyle="--", color="green")
+        self.ax_hist_twin.set_xlabel("st")
 
-        self.ax_hist.legend(loc="upper right")
+        # Collect legend entries from both axes
+        handles1, labels1 = self.ax_hist.get_legend_handles_labels()
+        handles2, labels2 = self.ax_hist_twin.get_legend_handles_labels()
 
+        # Put the combined legend on the main axis
+        self.ax_hist.legend(handles1 + handles2, labels1 + labels2, loc="upper right")
+
+    def _plot_action_sequence(self, mean_action, best_traj):
+        ax = self.ax_seq
+        ax.clear()
+        ax.set_title("Action sequence (horizon)")
+        ax.set_xlabel("timestep")
+        ax.set_ylabel("action value")
+        ax.grid(True)
+
+        T = mean_action.shape[0]
+
+        # Plot mean sequence
+        ax.plot(range(T), mean_action[:,0], label="mean throttle")
+        ax.plot(range(T), mean_action[:,1], label="mean steering")
+
+        # Plot best trajectory
+        ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
+        ax.plot(range(T), best_traj[:,1], 'g--', alpha=0.6, label="best steering")
+
+        ax.legend()

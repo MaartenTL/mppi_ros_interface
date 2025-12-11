@@ -120,10 +120,9 @@ class model_functions():
         return min + normalized_value * (max-min)
 
     def steering_2_steering_angle(self,steering_command,a_s,b_s,c_s,d_s,e_s):
-
         if torch.is_tensor(steering_command):
-            w_s = 0.5 * (torch.tanh(30*(steering_command+c_s))+1)
-            steering_angle1 = b_s * torch.tanh(a_s * (steering_command + c_s)) 
+            w_s = 0.5 # * (torch.tanh(30*(steering_command+c_s))+1)
+            steering_angle1 = b_s * torch.tanh(a_s * (steering_command + c_s))
             steering_angle2 = d_s * torch.tanh(e_s * (steering_command + c_s))
             steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2
         else: # use numpy implementation
