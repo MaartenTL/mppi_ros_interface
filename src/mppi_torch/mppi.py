@@ -225,6 +225,7 @@ class MPPIPlanner(ABC):
         self.beta_um = 1.2
 
         self.counter = 0 # counter for tracing buss
+        self.nan_printed = False
 
 
     def _dynamics(self, state, u, t=None):
@@ -305,6 +306,7 @@ class MPPIPlanner(ABC):
             self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
 
             eta = torch.sum(self.cost_total_non_zero)
+
             self.omega = (1. / eta) * self.cost_total_non_zero
             
             self.U += torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
@@ -358,6 +360,7 @@ class MPPIPlanner(ABC):
         # Reduce dimensionality if we only need the first command
         if self.u_per_command == 1:
             action = action[0]
+
         return action
 
     def _compute_rollout_costs(self, perturbed_actions):
@@ -394,9 +397,23 @@ class MPPIPlanner(ABC):
                 n_priors = len(prior_samples)
                 u[0:n_priors, :] = prior_samples
                 self.perturbed_action[0:n_priors, t] = u[0:n_priors, :]
+            state_old = state
+            u_old = u
 
             state, u = self._dynamics(state, u, t)
 
+
+            if torch.isnan(state).any() and self.nan_printed == False:
+                self.nan_printed = True
+                print("NaN detected in state!")
+                print(f"state: {state}")
+                print(f"where in state: {torch.where(torch.isnan(state))}")
+                print(f"state_old: {torch.isnan(state_old).any()}")
+                print(f"where in state old: {torch.where(torch.isnan(state_old))}")
+                print(f"u: {torch.isnan(u).any()}")
+                print(f"u old: {torch.isnan(u_old).any()}")
+                print(f"t: {t}")
+                print_next = True
 
 
             c = self._running_cost(state)
@@ -405,13 +422,14 @@ class MPPIPlanner(ABC):
             self.perturbed_action[:,t] = u
             cost_samples += c
 
-            c = torch.where(torch.isnan(c), torch.tensor(10e+20),c) # makes sure that no infinity trickles down to produce nan values
+            c = torch.where(torch.isnan(c), torch.tensor(10e+5),c) # makes sure that no infinity trickles down to produce nan values
 
             cost_horizon[:, t] = c
 
             # Save total states/actions
             states.append(state)
             actions.append(u)
+
 
         # print(f"cost horizon: {cost_horizon}")
         # print(torch.where(torch.isnan(cost_horizon)))
@@ -430,6 +448,26 @@ class MPPIPlanner(ABC):
 
         # self.counter += 1
         # print(f"-------------------------------------------------------------- {self.counter}")
+        w = self._exp_util(cost_horizon, actions)
+
+
+        # Compute also top n best actions to plot
+        # top_values, top_idx = torch.topk(self.total_costs, 10)
+        # self.top_values = top_values
+        # self.top_idx = top_idx
+        # self.top_trajs = torch.index_select(actions, 0, top_idx).squeeze(0)
+
+        # Update best action
+        best_idx = torch.argmax(w)
+        self.best_idx = best_idx
+        self.best_traj = torch.index_select(actions, 0, best_idx).squeeze(0)
+
+        weighted_seq = w * actions.permute(*torch.arange(actions.ndim - 1, -1, -1))
+        sum_seq = torch.sum(weighted_seq.permute(*torch.arange(weighted_seq.ndim - 1, -1, -1)), dim=0)
+        new_mean = sum_seq
+
+        self.mean_action = (1.0 - self.step_size_mean) * self.mean_action +\
+            self.step_size_mean * new_mean
 
         if self.mppi_mode == 'halton-spline':
             self.noise = self._update_distribution(cost_horizon, actions)
@@ -454,7 +492,6 @@ class MPPIPlanner(ABC):
         best_idx = torch.argmax(w)
         self.best_idx = best_idx
         self.best_traj = torch.index_select(actions, 0, best_idx).squeeze(0)
-       
         weighted_seq = w * actions.permute(*torch.arange(actions.ndim - 1, -1, -1))
 
 
