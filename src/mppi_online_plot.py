@@ -32,16 +32,17 @@ class OnlineMppiPlotter:
         self._step    = 0
 
         plt.ion()
-        self.fig, self.axes = plt.subplots(2, 2, figsize=(12, 12))
+        # self.fig, self.axes = plt.subplots(2, 2, figsize=(12, 12))
+        self.fig, self.ax_seq = plt.subplots(1, 1, figsize=(12, 12))
 
-        self.ax_u = self.axes[0, 0]
+        # self.ax_u = self.axes[0, 0]
         # self.ax_duNeff = self.axes[0, 1]
-        self.ax_cloud = self.axes[1, 0]
-        self.ax_hist = self.axes[1, 1]
-        self.ax_seq = self.axes[0, 1]
+        # self.ax_cloud = self.axes[1, 0]
+        # self.ax_hist = self.axes[1, 1]
+        # self.ax_seq = self.axes[0, 1]
 
 
-    def update(self, u0, Neff, cost_min, u0_samples=None, weights=None, t=None, mean_u=None, best_u=None):
+    def update(self, u0, Neff, cost_min, u0_samples=None, weights=None, t=None, mean_u=None, best_u=None, filt_u=None):
         """
         u0:          np.array shape (2,) -> [th, st]
         Neff:        float
@@ -73,11 +74,11 @@ class OnlineMppiPlotter:
         self.Neff_hist.append(Neff)
         self.cost_min_hist.append(cost_min)
 
-        self._plot_controls()
+        # self._plot_controls()
         # self._plot_du_and_Neff()
-        self._plot_cloud(u0_samples, weights, u0)
-        self._plot_hist(u0_samples, weights, u0)
-        self._plot_action_sequence(mean_u, best_u)
+        # self._plot_cloud(u0_samples, weights, u0)
+        # self._plot_hist(u0_samples, weights, u0)
+        self._plot_action_sequence(mean_u, best_u, filt_u)
 
         self.fig.tight_layout()
 
@@ -200,7 +201,7 @@ class OnlineMppiPlotter:
         # Put the combined legend on the main axis
         self.ax_hist.legend(handles1 + handles2, labels1 + labels2, loc="upper right")
 
-    def _plot_action_sequence(self, mean_action, best_traj):
+    def _plot_action_sequence(self, mean_action, best_traj, filter_traj):
         ax = self.ax_seq
         ax.clear()
         ax.set_title("Action sequence (horizon)")
@@ -215,7 +216,11 @@ class OnlineMppiPlotter:
         ax.plot(range(T), mean_action[:,1], label="mean steering")
 
         # Plot best trajectory
-        ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
-        ax.plot(range(T), best_traj[:,1], 'g--', alpha=0.6, label="best steering")
+        # ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
+        # ax.plot(range(T), best_traj[:,1], 'g--', alpha=0.6, label="best steering")
+
+        # Plot filtered trajectory
+        # ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
+        # ax.plot(range(T), filter_traj[:,1], 'g', alpha=0.6, label="filtered steering")
 
         ax.legend()

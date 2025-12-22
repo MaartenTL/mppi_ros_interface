@@ -879,8 +879,8 @@ def raw_track(choice):
         - Long straights (20 metres)
         Useful to troubleshoot throttle peaking, behaviour, dynamics.
         """
-        x_shift_vicon_lab = -4.0
-        y_shift_vicon_lab = -1.8
+        x_shift_vicon_lab = -1.5
+        y_shift_vicon_lab = -2.5
         L = 20.0  # long straight
 
         # Straight 1: left-to-right, y = 0

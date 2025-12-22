@@ -106,8 +106,17 @@ class Kinematic_Bicycle:
                 + mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self)
             )
 
-            acc_x = Fx / mf.m_self  # longitudinal acceleration
+            # th_abs = torch.abs(throttle)
+            # th_sign = torch.sign(throttle)  # -1, 0, +1
+            #
+            # Fx_motor_mag = torch.abs(mf.motor_force(th_abs, vx, mf.a_m_self, mf.b_m_self, mf.c_m_self))
+            # Fx_motor = th_sign * Fx_motor_mag
+            #
+            # Fx = Fx_motor + mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self)
+            # acc_x = Fx / mf.m_self
 
+
+            acc_x = Fx / mf.m_self  # longitudinal acceleration
             w = vx * torch.tan(steering_angle) / (mf.lr_self + mf.lf_self)  # angular velocity
             vy = mf.l_COM_self * w
 

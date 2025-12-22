@@ -1,20 +1,20 @@
 device: "cpu" # cuda:0, cpu
 dt: 0.1 # 0.05
 steps: 1000
-sim_model: "kinematic"      # kinematic, dynamic, SVGP, SVGP_wet
-mppi_model: "dynamic"     # kinematic, dynamic, SVGP
-v_target: 2.0             # 2.5, 4.0, 5.0
-laps: 5                   # number of laps to log
+sim_model: "SVGP"      # kinematic, dynamic, SVGP, SVGP_wet
+mppi_model: "kinematic"     # kinematic, dynamic, SVGP
+v_target: 1.5             # 2.5, 4.0, 5.0
+laps: 1                   # number of laps to log
 disturbance: 0            # 0: disturbance off, 1: disturbance on
-track: "simple_smooth_small"    # "racetrack_vicon_2" , "racetrack_vicon" , "simple_smooth", "simple_smooth_small", "straight_line", "simple_smooth_flip"
+track: "simple_smooth"    # "racetrack_vicon_2" , "racetrack_vicon" , "simple_smooth", "simple_smooth_small", "straight_line", "simple_smooth_flip"
 viz_rollouts: 0           # 0: don't visualize the rollouts, 1: visualize the rollouts
 use_obstacle: "off"           # "static", "dynamic", "off", "agent"
-vel_mode: "fd"            # velocity estimation technique, ls, fd, gt: ground truth from simulator
+vel_mode: "gt"            # velocity estimation technique, ls, fd, gt: ground truth from simulator
 env: "sim"                # "lab" , "sim" -- used for resetting the sim or not
 troubleshoot: 0           # 0: off, 1: on - display distribution of rollouts
-mode: "mppi"              # "mppi" , "s-mppi"
+mode: "mppi"              # "mppi", "s-mppi"
 
-throttle_min: -0.0
+throttle_min: 0.0
 throttle_max: 1.0 # 0.6
 steering_min: -1.0 # -0.8
 steering_max: 1.0 # 0.8
@@ -24,17 +24,17 @@ mppi:
   mppi_mode: "simple"  # halton-spline, simple
   sampling_method: "random"   # halton, random
   num_samples: 4000 # 50 # 100 50 4000 # 100
-  horizon: 10 # 12, 20                 # At least 12 for Halton Sampling
+  horizon: 10 # 12, 15, 20                 # At least 12 for Halton Sampling
   u_per_command: 10               # Make same as horizon so control over entire horizon gets outputted
-  lambda_: 40 # 0.5 # 0.05, 0.1
-  u_min: [-0.0, -1.0] # [-0.5, -0.8] # [-0.5, -2.0] # [0.0, -0.6]    # [0.0, -1.0]
+  lambda_: 40 # 0.5 # 40, 0.5, 0.05, 0.1
+  u_min: [0.0, -1.0] # [-0.5, -0.8] # [-0.5, -2.0] # [0.0, -0.6]    # [0.0, -1.0]
   u_max: [1.0, 1.0] # [0.5, 0.8] # [0.5, 2.0] # [0.6, 0.6]     # [1.0, 1.0]
-  noise_sigma:  [[0.2, 0.0], [0.0, 2.5]] # [[0.1, 0.0], [0., 1.5]] # [[0.1, 0.0], [0.0, 0.3]]
+  noise_sigma:  [[0.3, 0.0], [0.0, 0.5]] # [[0.1, 0.0], [0., 1.5]] # [[0.1, 0.0], [0.0, 0.3]]
 #  u_min: [-1.5, -1.0 ]
 #  u_max: [1.5, 1.0 ]
 #  noise_sigma: [[0.5, 0.0], [0., 0.3]]
   update_cov: False
-  rollout_var_discount: 0.95 # 0.95 # 0.95
+  rollout_var_discount: 0.95 # 0.95 # 0.95 # 0.95
   sample_null_action: True
   noise_abs_cost: False
   filter_u: True

@@ -80,7 +80,7 @@ class DARTLogger:
         self.csvfile = open(self.outfile, "w", newline="")
         self.writer = csv.writer(self.csvfile)
         self.writer.writerow([
-            "mppi_config","mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps","Vel_estimator","Use_obstacle",
+            "mppi_config","mppi_type", "mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps","Vel_estimator","Use_obstacle",
             "weights", "lap_time", "total expected cost",
             "t", "x", "y", "yaw", "vx", "vy", "omega","vx est", "vy est", "omega est",
             "throttle", "steering","throttle rate", "steering rate", "speed", "beta",
@@ -324,7 +324,7 @@ class DARTLogger:
             self.meta_written_once = True
         else:
             # write blanks after the first time
-            meta_vals = ["", "", "", "", "", "","","",""]
+            meta_vals = ["", "", "", "", "", "","","","",""]
             weights = None
 
         if self.new_lap_time:

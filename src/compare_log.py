@@ -292,10 +292,10 @@ def plot_one(df, label=None):
     # plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
     # plt.legend()
 
-    # XY
-    plt.figure("XY")
-    ax = plt.gca()
-    ax.plot(df["x"], df["y"], label=label)
+    # # XY
+    # plt.figure("XY")
+    # ax = plt.gca()
+    # ax.plot(df["x"], df["y"], label=label)
 
     # --- dynamic obstacle overlay (if present) ---
     # if {"obstacle_x", "obstacle_y", "obstacle_yaw"}.issubset(df.columns):
@@ -342,9 +342,14 @@ def plot_one(df, label=None):
     #                 edgecolor="none"
     #             )
     #             ax.add_patch(e)
+    #
+    # ax.set_aspect("equal", adjustable="box")
+    # plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
+    # plt.legend()
 
-    ax.set_aspect("equal", adjustable="box")
-    plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
+    # XY
+    plt.figure("XY"); plt.plot(df["x"], df["y"], label=label);
+    plt.axis("equal"); plt.xlabel("x [m]"); plt.ylabel("y [m]"); plt.title("Trajectory comparison")
     plt.legend()
 
     # --- Closeness to obstacle and lane ---
@@ -430,7 +435,7 @@ def plot_one(df, label=None):
 
     plt.figure("Beta")
     plt.plot(df["time"], np.rad2deg(df["beta"]), label=f"beta_deg {label}" if label else "beta_deg")
-    plt.xlabel("time [s]"); plt.ylabel("sideslip [deg/s]"); plt.title("Sideslip"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("sideslip [deg]"); plt.title("Sideslip"); plt.legend()
 
     # Controls
     plt.figure("Throttle")
@@ -503,14 +508,14 @@ def plot_one(df, label=None):
     lat = df["lat_err"].to_numpy(float)
     pos = df["pos_err"].to_numpy(float)
 
-    cum_abs_lat = np.cumsum(np.abs(lat) * dt)  # ∫|lat| dt
-    cum_pos     = np.cumsum(pos * dt)          # ∫||pos|| dt
-    cum_lat2    = np.cumsum((lat**2) * dt)     # ∫lat^2 dt (optional)
+    cum_abs_lat = np.cumsum(np.abs(lat))  # ∫|lat| dt
+    cum_pos     = np.cumsum(pos)          # ∫||pos|| dt
+    cum_lat2    = np.cumsum((lat**2))     # ∫lat^2 dt (optional)
 
     plt.figure("Cumulative Error (abs)")
     plt.plot(t, cum_abs_lat, label=f"∫|lat| dt — {label}")
     plt.plot(t, cum_pos,     label=f"∫pos dt — {label}")
-    plt.xlabel("time [s]"); plt.ylabel("m·s"); plt.title("Cumulative Errors")
+    plt.xlabel("time [s]"); plt.ylabel("m"); plt.title("Cumulative Errors")
     plt.legend()
 
     simple_fft_plot(df["time"], ste_plot, label, title="Steering FFT")

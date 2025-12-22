@@ -126,12 +126,46 @@ class model_functions():
             steering_angle2 = d_s * torch.tanh(e_s * (steering_command + c_s))
             steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2
         else: # use numpy implementation
+            w_s = 0.5 # * (np.tanh(30*(steering_command+c_s))+1)
+            steering_angle1 = b_s * np.tanh(a_s * (steering_command + c_s))
+            steering_angle2 = d_s * np.tanh(e_s * (steering_command + c_s))
+            steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2
+        return steering_angle
+
+
+    def steering_2_steering_angle_actual(self,steering_command,a_s,b_s,c_s,d_s,e_s):
+        if torch.is_tensor(steering_command):
+            w_s = 0.5 * (torch.tanh(30*(steering_command+c_s))+1)
+            steering_angle1 = b_s * torch.tanh(a_s * (steering_command + c_s))
+            steering_angle2 = d_s * torch.tanh(e_s * (steering_command + c_s))
+            steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2
+        else: # use numpy implementation
             w_s = 0.5 * (np.tanh(30*(steering_command+c_s))+1)
             steering_angle1 = b_s * np.tanh(a_s * (steering_command + c_s))
             steering_angle2 = d_s * np.tanh(e_s * (steering_command + c_s))
             steering_angle = (w_s)*steering_angle1+(1-w_s)*steering_angle2
         return steering_angle
-    
+
+    def steering_angle_2_steering_command(self, delta,
+                                          a_s, b_s, c_s, d_s, e_s,
+                                          steer_min=-1.0, steer_max=1.0,
+                                          eps=1e-6):
+        """
+        Fast approximate inverse of steering_2_steering_angle
+        using sign-based piecewise tanh inversion.
+        """
+
+        if delta >= 0.0:
+            # "positive steering" branch
+            r = np.clip(delta / b_s, -1.0 + eps, 1.0 - eps)
+            u = np.arctanh(r) / a_s - c_s
+        else:
+            # "negative steering" branch
+            r = np.clip(delta / d_s, -1.0 + eps, 1.0 - eps)
+            u = np.arctanh(r) / e_s - c_s
+
+        return np.clip(u, steer_min, steer_max)
+
     def rolling_friction(self,vx,a_f,b_f,c_f,d_f):
         if torch.is_tensor(vx):
             F_rolling = - ( a_f * torch.tanh(b_f  * vx) + c_f * vx + d_f * vx**2 )
@@ -1460,12 +1494,13 @@ class motor_and_friction_model(torch.nn.Sequential,model_functions):
         d_f = self.minmax_scale_hm(-0.2,0.2,constraint_weights(self.d_f))
 
         return [a_m,b_m,c_m,time_C_m,a_f,b_f,c_f,d_f]
-    
-        
+
+
     def minmax_scale_hm(self,min,max,normalized_value):
-    # normalized value should be between 0 and 1
+        # normalized value should be between 0 and 1
         return min + normalized_value * (max-min)
-    
+        Fx = self.motor_force(filtered_throttle_model,v,a_m,b_m,c_m) + Friction
+
     def forward(self, train_x):  # this is the model that will be fitted
         v = torch.unsqueeze(train_x[:,0],1)
         throttle_mat = train_x[:,1:]
@@ -1475,7 +1510,7 @@ class motor_and_friction_model(torch.nn.Sequential,model_functions):
 
         #k_vec = self.produce_past_action_coefficients_1st_oder_step_response(time_C_m,self.n_previous_throttle,self.dt)
 
-        k_vec_base = self.produce_past_action_coefficients_1st_oder_step_response(time_C_m,self.n_previous_throttle+1,self.dt) # 
+        k_vec_base = self.produce_past_action_coefficients_1st_oder_step_response(time_C_m,self.n_previous_throttle+1,self.dt) #
         # using average between current and following coefficient
         #k_vec = 0.5 * (k_vec_base[0:-1] + k_vec_base[1:])
         k_vec = k_vec_base[1:]
@@ -1486,11 +1521,10 @@ class motor_and_friction_model(torch.nn.Sequential,model_functions):
             Friction = self.rolling_friction(v,a_f,b_f,c_f,d_f)
         else:
             Friction = self.rolling_friction(v,self.a_f_self,self.b_f_self,self.c_f_self,self.d_f_self)
-        
-        
-        Fx = self.motor_force(filtered_throttle_model,v,a_m,b_m,c_m) + Friction
+
 
         return Fx, filtered_throttle_model, k_vec
+
 
 
 class steering_curve_model(torch.nn.Sequential,model_functions):

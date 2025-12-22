@@ -29,6 +29,11 @@ import json
 # noinspection PyUnresolvedReferences
 from geometry_msgs.msg import PointStamped, Point
 
+from dart_dynamic_models import model_functions,load_SVGPModel_actuator_dynamics_analytic
+
+mf = model_functions()
+
+
 abs_path = os.path.dirname(os.path.abspath(__file__))
 # noinspection PyUnresolvedReferences
 from visualization_msgs.msg import MarkerArray, Marker
@@ -103,8 +108,8 @@ class MPPIWeights:
         self.q_lag = 0.5 # 1.0 2.5
 
 
-        self.q_head = 0.1 # 0.8 # 0.25 # 0.25
-        self.q_v = 1.0 # 1.0 # 0.0
+        self.q_head = 1.0 # 0.8 # 0.25 # 0.25
+        self.q_v = 0.1 # 1.0 # 0.0
         self.q_vy = 0.0 # 0.2 # 0.2
         self.q_omega = 0.0 # 0.0
 
@@ -112,15 +117,15 @@ class MPPIWeights:
 
         self.ter_q_lat = self.q_lat * 0.0 # 10.0
         self.ter_q_lag = self.q_lag * 0.0 # 2.0
-        self.ter_q_head = self.q_head * 0.0 # 1.0
+        self.ter_q_head = 0 # self.q_head * 10.0 # 1.0
         self.ter_q_v = self.q_v * 0.0 # 1.0
         self.ter_q_vy = self.q_vy * 0.0
         self.ter_q_omega = self.q_omega * 0.0 #0.5
 
-        self.ter_q_pos = self.q_pos * 0.0
+        self.ter_q_pos = 0 # self.q_pos * 10.0
 
-        self.q_u_throttle = 0.01 #5 # 0.01
-        self.q_du_throttle = 0.01 # 2 # 0.01
+        self.q_u_throttle = 0.01  #5 # 0.01
+        self.q_du_throttle = 0.01  # 2 # 0.01
 
         self.q_u_steering = 0.01 # 0.2 # 0.1
         self.q_du_steering = 0.00
@@ -369,8 +374,15 @@ class ROSObjective:
         head_err = self.wrap_angle(yaw - ref_yaw)
         speed = torch.sqrt(vx ** 2 + vy ** 2)
         speed_err = speed - V_target
-
         pos_err = dx ** 2 + dy ** 2
+
+        # # reference heading at this step
+        # cy = self.ref_yaw_cos[self.counter - 1]
+        # sy = self.ref_yaw_sin[self.counter - 1]
+        #
+        # # project world-frame velocity onto the path tangent
+        # v_along = vx * cy + vy * sy
+        # speed_err = v_along - V_target
 
         # cost = (self.weight.q_lat * lat_err ** 2
         #         + self.weight.q_lag * lag_err ** 2
@@ -677,7 +689,7 @@ class ROSObjective:
 
 
 
-def reset_sim(x=-1.0, y=-2.5, theta=0.0, model_choice=1, *,
+def reset_sim(x, y, theta, model_choice, *,
               actuator_dynamics=False, disturbance=False):
     # Set pose + options and raise the reset flag
     dr_client.update_configuration({
@@ -878,7 +890,7 @@ if __name__ == "__main__":
 
     rate = rospy.Rate(1/CONFIG["dt"])
 
-    # rate = rospy.Rate(1/0.1)
+    rate = rospy.Rate(1/0.3)
 
     counter = 0
     global_path_message_rate = 5  # publish 1 every 5 control loops
@@ -933,39 +945,9 @@ if __name__ == "__main__":
         else:
             state_est = state
 
+
         obj.current_state = state_est  # update the current state in the objective, which updates the goal
         obj.counter = 0
-
-
-        # def rollout_cost(state0, U):
-        #     # state0: [1,6], U: [T,2]
-        #     state = state0.clone()
-        #     total = 0.0
-        #     print(f"initial state: {state}")
-        #     for t in range(T):
-        #         state, _ = dynamics.step(state, U[t:t + 1, :], t)
-        #         c_t = obj.compute_running_cost(state)  # returns [K], here K=1
-        #         total += c_t[0].item()
-        #         print(f" step {t}, state: {state}, action: {U[t:t + 1, :]}, cost {c_t[0].item():.3f}")
-        #     # terminal
-        #     states_T = state.unsqueeze(0)  # [1,1,6]
-        #     actions_T = U.unsqueeze(0)  # [1,T,2]
-        #     term = obj.terminal_costs(states_T, actions_T)[0].item()
-        #     return total + term
-        #
-        # print("----------------------------------------------------------------------------------")
-        # J_left = rollout_cost(state_est, U_left)
-        # print("J_left :", J_left)
-        # obj.counter = 0
-        # J_right = rollout_cost(state_est, U_right)
-        # print("J_right:", J_right)
-        # obj.counter= 0
-        # J_zero = rollout_cost(state_est, U_zero)
-        # obj.counter= 0
-        # print("J_zero :", J_zero)
-
-
-
 
         # Sending the current position and expected positions of the other agent to the objective
 
@@ -1011,8 +993,34 @@ if __name__ == "__main__":
         #
         # last_throttle = np.clip(last_throttle + dth * dt, th_min, th_max)
         # last_steer = np.clip(last_steer + dst * dt, steer_min, steer_max)
-	
-        sim.send_control(torch.tensor([np.clip(action[0,0].item(), th_min, th_max),np.clip(action[0,1].item(),steer_min, steer_max)], dtype=torch.float32))
+
+        steering_angle = mf.steering_2_steering_angle(
+            np.clip(action[0,1].item(),steer_min, steer_max),
+            mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self
+        )
+
+        delta_max = mf.steering_2_steering_angle_actual(1.0, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self,
+                                                        mf.e_s_self)
+        delta_min = mf.steering_2_steering_angle_actual(-1.0, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self,
+                                                        mf.e_s_self)
+
+        steering_angle = np.clip(steering_angle, delta_min, delta_max)
+
+        transformed_steer = mf.steering_angle_2_steering_command(
+            steering_angle,
+            mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self,
+            steer_min, steer_max
+        )
+
+
+        # print(f"transformed_steer: {transformed_steer}")
+        # print(f"old steer: {np.clip(action[0,1].item(), steer_min, steer_max)}")
+
+        # transformed_steer = np.clip(action[0,1].item(),steer_min, steer_max)
+
+
+
+        sim.send_control(torch.tensor([np.clip(action[0,0].item(), th_min, th_max),transformed_steer], dtype=torch.float32))
 
         # sim.send_control(torch.tensor([last_throttle, dst], dtype=torch.float32))
 
@@ -1143,39 +1151,39 @@ if __name__ == "__main__":
                             weights_np = w.cpu().numpy()
                             # Optional subsampling for huge K
                             K = u0_samples.shape[0]
-                            if K > 2000:
-                                N_top = 100
-                                M_rand = 300
-
-                                # For halton we have total_costs; for simple we only have cost_total
-                                if hasattr(planner, "total_costs") and planner.total_costs is not None:
-                                    costs_for_sort = planner.total_costs.detach()
-                                else:
-                                    costs_for_sort = planner.cost_total.detach()
-
-                                _, top_idx = torch.topk(-costs_for_sort, N_top)  # lowest cost
-                                top_idx = top_idx.cpu().numpy()
-
-                                all_idx = np.arange(K)
-                                mask = np.ones(K, dtype=bool)
-                                mask[top_idx] = False
-                                rest_idx = all_idx[mask]
-                                if rest_idx.size > 0:
-                                    M_rand = min(M_rand, rest_idx.size)
-                                    rand_idx = np.random.choice(rest_idx, size=M_rand, replace=False)
-                                    sel_idx = np.concatenate([top_idx, rand_idx])
-                                else:
-                                    sel_idx = top_idx
-
-                                u0_samples = u0_samples[sel_idx]
-                                weights_np = weights_np[sel_idx]
+                            # if K > 2000:
+                            #     N_top = 100
+                            #     M_rand = 300
+                            #
+                            #     # For halton we have total_costs; for simple we only have cost_total
+                            #     if hasattr(planner, "total_costs") and planner.total_costs is not None:
+                            #         costs_for_sort = planner.total_costs.detach()
+                            #     else:
+                            #         costs_for_sort = planner.cost_total.detach()
+                            #
+                            #     _, top_idx = torch.topk(-costs_for_sort, N_top)  # lowest cost
+                            #     top_idx = top_idx.cpu().numpy()
+                            #
+                            #     all_idx = np.arange(K)
+                            #     mask = np.ones(K, dtype=bool)
+                            #     mask[top_idx] = False
+                            #     rest_idx = all_idx[mask]
+                            #     if rest_idx.size > 0:
+                            #         M_rand = min(M_rand, rest_idx.size)
+                            #         rand_idx = np.random.choice(rest_idx, size=M_rand, replace=False)
+                            #         sel_idx = np.concatenate([top_idx, rand_idx])
+                            #     else:
+                            #         sel_idx = top_idx
+                            #
+                            #     u0_samples = u0_samples[sel_idx]
+                            #     weights_np = weights_np[sel_idx]
 
                             # Effective sample size
                             Neff = float(1.0 / np.sum(weights_np**2))
+                            # print(Neff)
 
                 mean_u = action  # (T,2)
                 best_u = planner.best_traj.detach().cpu().numpy()  # (T,2)
-
 
                 # 4) update plot if we have something
                 if mppi_plotter is not None and u0_samples is not None and weights_np is not None:
@@ -1188,6 +1196,7 @@ if __name__ == "__main__":
                         t=step_idx,
                         mean_u=mean_u,
                         best_u=best_u,
+                        filt_u=planner.test_filter_u,
                     )
 
             except Exception as e:
