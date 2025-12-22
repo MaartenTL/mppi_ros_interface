@@ -129,6 +129,8 @@ class MPPIPlanner(ABC):
         self.update_lambda = cfg.update_lambda
         self.update_cov = cfg.update_cov
 
+        self.test_filter_u = None
+
         # Bound actions
         self.u_min = cfg.u_min
         self.u_max = cfg.u_max
@@ -207,7 +209,7 @@ class MPPIPlanner(ABC):
         self.gamma = cfg.rollout_var_discount 
         self.gamma_seq = torch.cumprod(torch.tensor([1.0] + [self.gamma] * (self.T - 1)),dim=0).reshape(1, self.T)
         self.gamma_seq = self.gamma_seq.to(**self.tensor_args)
-        self.beta = 1 # param storm
+        self.beta = cfg.lambda_ # param storm
 
         # Filtering
         self.sgf_window = 9
@@ -224,7 +226,7 @@ class MPPIPlanner(ABC):
         self.beta_lm = 0.9
         self.beta_um = 1.2
 
-        self.counter = 0 # counter for tracing buss
+        self.counter = 0 # counter for tracing bugs
         self.nan_printed = False
 
 
@@ -234,12 +236,12 @@ class MPPIPlanner(ABC):
     def _running_cost(self, state):
         return self.running_cost(state)
 
-    def _exp_util(self, costs, actions):
+    def _exp_util(self, costs, actions, terminal_cost):
         """
            Calculate weights using exponential utility given cost
         """
         traj_costs = cost_to_go(costs, self.gamma_seq)
-        traj_costs = traj_costs[:,0]
+        traj_costs = traj_costs[:,0] + terminal_cost
 
         #control_costs = self._control_costs(actions)
         total_costs = traj_costs - torch.min(traj_costs) #+ self.beta * control_costs
@@ -248,12 +250,14 @@ class MPPIPlanner(ABC):
         exp_ = torch.exp((-1.0/self.beta) * total_costs)
         eta = torch.sum(exp_)       # tells how many significant samples we have, more or less
         w = 1/eta*exp_
-        # print(self.beta)
-        # beta update 
-        if eta > self.eta_u_bound:
-            self.beta = self.beta*self.beta_lm
-        elif eta < self.eta_l_bound:
-            self.beta = self.beta*self.beta_um
+
+        test_exp = torch.exp((-1.0/self.lambda_) * total_costs)
+        # beta update
+        if self.update_lambda:
+            if eta > self.eta_u_bound:
+                self.beta = self.beta*self.beta_lm
+            elif eta < self.eta_l_bound:
+                self.beta = self.beta*self.beta_um
         
         #w = torch.softmax((-1.0/self.beta) * total_costs, dim=0)
         self.total_costs = total_costs
@@ -298,19 +302,23 @@ class MPPIPlanner(ABC):
         self.state = state.to(dtype=self.tensor_args['dtype'], device=self.tensor_args['device'])
 
         if self.mppi_mode == 'simple':
+            
+            saved_action = self.U[-1]
             self.U = torch.roll(self.U, -1, dims=0)
+            self.U[-1] = saved_action
 
             cost_total = self._compute_total_cost_batch_simple()
 
-            beta = torch.min(cost_total)
-            self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
+            # beta = torch.min(cost_total)
+            # self.cost_total_non_zero = _ensure_non_zero(cost_total, beta, 1 / self.lambda_)
+            #
+            # eta = torch.sum(self.cost_total_non_zero)
+            #
+            # self.omega = (1. / eta) * self.cost_total_non_zero
+            #
+            # self.U += torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
 
-            eta = torch.sum(self.cost_total_non_zero)
-
-            self.omega = (1. / eta) * self.cost_total_non_zero
-            
-            self.U += torch.sum(self.omega.view(-1, 1, 1) * self.noise, dim=0)
-
+            self.U = torch.clone(self.mean_action)
             action = self.U
 
         elif self.mppi_mode == 'halton-spline':
@@ -333,13 +341,14 @@ class MPPIPlanner(ABC):
 
         # print(eta, self.lambda_)
         # Lambda update
-        if self.update_lambda and self.mppi_mode == 'simple':
-            if eta > self.eta_u_bound:
-                self.lambda_ = self.lambda_*self.beta_lm
-            elif eta < self.eta_l_bound:
-                self.lambda_ = self.lambda_*self.beta_um
+        # if self.update_lambda and self.mppi_mode == 'simple':
+        #     if eta > self.eta_u_bound:
+        #         self.lambda_ = self.lambda_*self.beta_lm
+        #     elif eta < self.eta_l_bound:
+        #         self.lambda_ = self.lambda_*self.beta_um
 
         # Smoothing with Savitzky-Golay filter
+        # self.test_filter_u = action
         if self.filter_u:
             u_ = action.cpu().numpy()
             u_filtered = signal.savgol_filter(
@@ -354,6 +363,8 @@ class MPPIPlanner(ABC):
                 )
             if self.tensor_args['device'] == "cpu":
                 action = torch.from_numpy(u_filtered).to('cpu')
+
+                # self.test_filter_u = torch.from_numpy(u_filtered).to('cpu')
             else:
                 action = torch.from_numpy(u_filtered).to('cuda')
 
@@ -372,7 +383,8 @@ class MPPIPlanner(ABC):
 
         cost_total = torch.zeros(K, device=self.tensor_args['device'], dtype=self.tensor_args['dtype'])
         cost_horizon = torch.zeros([K, T], device=self.tensor_args['device'], dtype=self.tensor_args['dtype'])
-        cost_samples = cost_total
+        cost_samples = torch.zeros_like(cost_total)
+        terminal_cost = torch.zeros_like(cost_total)
 
         # allow propagation of a sample of states (ex. to carry a distribution), or to start with a single state
         if self.state.shape == (K, self.nx):
@@ -383,7 +395,7 @@ class MPPIPlanner(ABC):
         # print(torch.isnan(self.u_scale).any().item())
         states = []
         actions = []
-        for t in range(T):
+        for t in range(T): # range(T):
 
             u = self.u_scale * perturbed_actions[:, t]
 
@@ -400,8 +412,11 @@ class MPPIPlanner(ABC):
             state_old = state
             u_old = u
 
-            state, u = self._dynamics(state, u, t)
+            state, _ = self._dynamics(state, u, t)
 
+            # print(f"u: {u}")
+            # print(f"old state: {state_old}")
+            # print(f"new state: {state}")
 
             if torch.isnan(state).any() and self.nan_printed == False:
                 self.nan_printed = True
@@ -415,9 +430,7 @@ class MPPIPlanner(ABC):
                 print(f"t: {t}")
                 print_next = True
 
-
             c = self._running_cost(state)
-
             # Update action if there were changes in fusion mppi due for instance to suction constraints
             self.perturbed_action[:,t] = u
             cost_samples += c
@@ -430,27 +443,21 @@ class MPPIPlanner(ABC):
             states.append(state)
             actions.append(u)
 
-
-        # print(f"cost horizon: {cost_horizon}")
-        # print(torch.where(torch.isnan(cost_horizon)))
-        # print(f"inspection of tensor: {cost_horizon[997,:]}")
         # Actions is K x T x nu
         # States is K x T x nx
         actions = torch.stack(actions, dim=-2)
         states = torch.stack(states, dim=-2)
-
         # action perturbation cost
         if self.terminal_state_cost:
-            c = self.terminal_state_cost(states, actions)
-            cost_samples += c
+            terminal_cost = self.terminal_state_cost(states, actions)
+            cost_samples += terminal_cost
+
 
         cost_total += cost_samples # .mean(dim=0) THIS IS A BIG ERROR!??? Only adds the mean of all the terminal cost to each total cost??
-
         # self.counter += 1
         # print(f"-------------------------------------------------------------- {self.counter}")
-        w = self._exp_util(cost_horizon, actions)
-
-
+        w = self._exp_util(cost_horizon, actions, terminal_cost)
+        self.omega = w
         # Compute also top n best actions to plot
         # top_values, top_idx = torch.topk(self.total_costs, 10)
         # self.top_values = top_values
@@ -469,17 +476,19 @@ class MPPIPlanner(ABC):
         self.mean_action = (1.0 - self.step_size_mean) * self.mean_action +\
             self.step_size_mean * new_mean
 
+        # print(f"mean action: {self.mean_action}")
+
         if self.mppi_mode == 'halton-spline':
-            self.noise = self._update_distribution(cost_horizon, actions)
+            self.noise = self._update_distribution(cost_horizon, actions, terminal_cost)
 
         return cost_total, states, actions
  
-    def _update_distribution(self, costs, actions):
+    def _update_distribution(self, costs, actions, terminal_cost):
         """
             Update moments using sample trajectories.
             So far only mean is updated, eventually one could also update the covariance
         """
-        w = self._exp_util(costs, actions)
+        w = self._exp_util(costs, actions, terminal_cost)
 
 
         # Compute also top n best actions to plot
