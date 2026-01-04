@@ -83,6 +83,8 @@ class MPPIConfig(object):
     eta_u_bound: int = 10
     eta_l_bound: int = 5
 
+    pre_filter: str = "off"
+
 class MPPIPlanner(ABC):
     """
     Model Predictive Path Integral control
@@ -130,6 +132,8 @@ class MPPIPlanner(ABC):
         self.update_cov = cfg.update_cov
 
         self.test_filter_u = None
+
+
 
         # Bound actions
         self.u_min = cfg.u_min
@@ -179,6 +183,7 @@ class MPPIPlanner(ABC):
         # Moments and best trajectory
         self.mean_action = torch.zeros(self.nu, device=self.tensor_args['device'], dtype=self.tensor_args['dtype'])
         self.best_traj = self.mean_action.clone()
+        self.best_filtered = self.mean_action.clone()
 
         # Sampled results from last command
         self.state = None
@@ -223,8 +228,12 @@ class MPPIPlanner(ABC):
 
         self.eta_u_bound = cfg.eta_u_bound
         self.eta_l_bound = cfg.eta_l_bound
-        self.beta_lm = 0.9
-        self.beta_um = 1.2
+        self.eta = 0.0
+
+        self.beta_lm = 0.5 # 0.2 0.9, 0.6
+        self.beta_um = 2.0 # 1.2, 2.5, 5.0
+
+        self.pre_filter = cfg.pre_filter
 
         self.counter = 0 # counter for tracing bugs
         self.nan_printed = False
@@ -248,15 +257,14 @@ class MPPIPlanner(ABC):
 
         # Normalization of the weights
         exp_ = torch.exp((-1.0/self.beta) * total_costs)
-        eta = torch.sum(exp_)       # tells how many significant samples we have, more or less
-        w = 1/eta*exp_
+        self.eta = torch.sum(exp_)       # tells how many significant samples we have, more or less
+        w = 1/self.eta*exp_
 
-        test_exp = torch.exp((-1.0/self.lambda_) * total_costs)
         # beta update
         if self.update_lambda:
-            if eta > self.eta_u_bound:
+            if self.eta > self.eta_u_bound:
                 self.beta = self.beta*self.beta_lm
-            elif eta < self.eta_l_bound:
+            elif self.eta < self.eta_l_bound:
                 self.beta = self.beta*self.beta_um
         
         #w = torch.softmax((-1.0/self.beta) * total_costs, dim=0)
@@ -374,6 +382,16 @@ class MPPIPlanner(ABC):
 
         return action
 
+    def _lowpass_filter_horizon(self, x, alpha):
+        """
+        x: (K, T, nu) tensor. Filters along T.
+        """
+        y = torch.empty_like(x)
+        y[:, 0, :] = x[:, 0, :]
+        for t in range(1, self.T):
+            y[:, t, :] = alpha * y[:, t - 1, :] + (1.0 - alpha) * x[:, t, :]
+        return y
+
     def _compute_rollout_costs(self, perturbed_actions):
         """
             Given a sequence of perturbed actions, forward simulates their effects and calculates costs for each rollout
@@ -392,7 +410,6 @@ class MPPIPlanner(ABC):
         else:
             state = self.state.view(1, -1).repeat(K, 1)
 
-        # print(torch.isnan(self.u_scale).any().item())
         states = []
         actions = []
         for t in range(T): # range(T):
@@ -412,11 +429,7 @@ class MPPIPlanner(ABC):
             state_old = state
             u_old = u
 
-            state, _ = self._dynamics(state, u, t)
-
-            # print(f"u: {u}")
-            # print(f"old state: {state_old}")
-            # print(f"new state: {state}")
+            state, u = self._dynamics(state, u, t)
 
             if torch.isnan(state).any() and self.nan_printed == False:
                 self.nan_printed = True
@@ -431,6 +444,7 @@ class MPPIPlanner(ABC):
                 print_next = True
 
             c = self._running_cost(state)
+
             # Update action if there were changes in fusion mppi due for instance to suction constraints
             self.perturbed_action[:,t] = u
             cost_samples += c
@@ -443,6 +457,9 @@ class MPPIPlanner(ABC):
             states.append(state)
             actions.append(u)
 
+            # print(f"at time t: {t}, costs: {}")
+
+
         # Actions is K x T x nu
         # States is K x T x nx
         actions = torch.stack(actions, dim=-2)
@@ -453,8 +470,10 @@ class MPPIPlanner(ABC):
             cost_samples += terminal_cost
 
 
+
         cost_total += cost_samples # .mean(dim=0) THIS IS A BIG ERROR!??? Only adds the mean of all the terminal cost to each total cost??
         # self.counter += 1
+
         # print(f"-------------------------------------------------------------- {self.counter}")
         w = self._exp_util(cost_horizon, actions, terminal_cost)
         self.omega = w
@@ -468,6 +487,9 @@ class MPPIPlanner(ABC):
         best_idx = torch.argmax(w)
         self.best_idx = best_idx
         self.best_traj = torch.index_select(actions, 0, best_idx).squeeze(0)
+        # self.best_filtered = self._lowpass_filter_horizon(self.best_traj, 0.5)
+
+
 
         weighted_seq = w * actions.permute(*torch.arange(actions.ndim - 1, -1, -1))
         sum_seq = torch.sum(weighted_seq.permute(*torch.arange(weighted_seq.ndim - 1, -1, -1)), dim=0)
@@ -477,6 +499,20 @@ class MPPIPlanner(ABC):
             self.step_size_mean * new_mean
 
         # print(f"mean action: {self.mean_action}")
+
+        delta = actions - self.mean_action.unsqueeze(0)
+
+        # Update Covariance
+        if self.update_cov:
+            # Diagonal covariance of size AxA
+            weighted_delta = w * (delta ** 2).T
+            # cov_update = torch.diag(torch.mean(torch.sum(weighted_delta.T, dim=0), dim=0))
+            cov_update = torch.mean(torch.sum(weighted_delta.T, dim=0), dim=0)
+
+            self.cov_action = (1.0 - self.step_size_cov) * self.cov_action + self.step_size_cov * cov_update
+            self.cov_action += self.kappa  # * self.init_cov_action
+            # self.cov_action[self.cov_action < 0.0005] = 0.0005
+            self.scale_tril = torch.sqrt(self.cov_action)
 
         if self.mppi_mode == 'halton-spline':
             self.noise = self._update_distribution(cost_horizon, actions, terminal_cost)
@@ -501,6 +537,8 @@ class MPPIPlanner(ABC):
         best_idx = torch.argmax(w)
         self.best_idx = best_idx
         self.best_traj = torch.index_select(actions, 0, best_idx).squeeze(0)
+
+
         weighted_seq = w * actions.permute(*torch.arange(actions.ndim - 1, -1, -1))
 
 
@@ -552,9 +590,13 @@ class MPPIPlanner(ABC):
             self.delta[-1,:,:] = self.Z_seq
         # Keeps the size but scales values
         scaled_delta = torch.matmul(self.delta, torch.diag(self.scale_tril)).view(self.delta.shape[0], self.T, self.nu)
+
         # Broadcast own control to noise over samples; now it's K x T x nu
         self.perturbed_action = self.U + scaled_delta
-        
+
+        if self.pre_filter == "lowpass":
+            self.perturbed_action = self._lowpass_filter_horizon(self.perturbed_action, alpha=0.5)
+
         # Naively bound control
         self.perturbed_action = self._bound_action(self.perturbed_action)
 
@@ -580,15 +622,13 @@ class MPPIPlanner(ABC):
             self.delta = self.get_samples(self.K, base_seed=0)
         elif self.delta == None and self.sample_method == 'halton':
             self.delta = self.get_samples(self.K, base_seed=0)
-            #add zero-noise seq so mean is always a part of samples
-
+            # add zero-noise seq so mean is always a part of samples
 
         # IMPLEMENT FIRST ORDER FILTER HERE IF WANTED FOR ACTUATOR DYNAMICS
 
-
         # Add zero-noise seq so mean is always a part of samples
         if self.sample_previous_plan:
-            self.delta[-1,:,:] = self.Z_seq
+            self.delta[-1, :, :] = self.Z_seq
         # Keeps the size but scales values
         scaled_delta = torch.matmul(self.delta, torch.diag(self.scale_tril)).view(self.delta.shape[0], self.T, self.nu)
 
@@ -614,7 +654,6 @@ class MPPIPlanner(ABC):
 
         return self.cost_total
 
-    
     def _bound_action(self, action):
         if self.u_max is not None:
             action = torch.max(torch.min(action, self.u_max), self.u_min)
