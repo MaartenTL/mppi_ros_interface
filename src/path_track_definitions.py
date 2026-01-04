@@ -879,9 +879,12 @@ def raw_track(choice):
         - Long straights (20 metres)
         Useful to troubleshoot throttle peaking, behaviour, dynamics.
         """
+        # x_shift_vicon_lab = -4.0
+        # y_shift_vicon_lab = 0.0
+
         x_shift_vicon_lab = -1.5
         y_shift_vicon_lab = -2.5
-        L = 20.0  # long straight
+        L = 40.0  # long straight
 
         # Straight 1: left-to-right, y = 0
         x1 = np.linspace(0, L, n_checkpoints)

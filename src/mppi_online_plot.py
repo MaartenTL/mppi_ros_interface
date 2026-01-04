@@ -32,14 +32,23 @@ class OnlineMppiPlotter:
         self._step    = 0
 
         plt.ion()
-        # self.fig, self.axes = plt.subplots(2, 2, figsize=(12, 12))
-        self.fig, self.ax_seq = plt.subplots(1, 1, figsize=(12, 12))
+        self.fig, self.axes = plt.subplots(2, 2, figsize=(12, 12))
+        #self.fig, self.ax_seq = plt.subplots(1, 1, figsize=(12, 12))
 
-        # self.ax_u = self.axes[0, 0]
+        # self.fig, self.axes = plt.subplots(1, 2, figsize=(12, 12))
+
+        # self.fig, self.ax_duNeff = plt.subplots(1, 1, figsize=(8, 6))
+
+        # self.ax_hist_unw = self.axes[0]  # unweighted throttle
+        # self.ax_hist_w = self.axes[1]  # weighted throttle
+
+        self.ax_u = self.axes[0, 0]
+
+        self.ax_cloud = self.axes[1, 0]
+        self.ax_hist = self.axes[1, 1]
+
         # self.ax_duNeff = self.axes[0, 1]
-        # self.ax_cloud = self.axes[1, 0]
-        # self.ax_hist = self.axes[1, 1]
-        # self.ax_seq = self.axes[0, 1]
+        self.ax_seq = self.axes[0, 1]
 
 
     def update(self, u0, Neff, cost_min, u0_samples=None, weights=None, t=None, mean_u=None, best_u=None, filt_u=None):
@@ -74,11 +83,15 @@ class OnlineMppiPlotter:
         self.Neff_hist.append(Neff)
         self.cost_min_hist.append(cost_min)
 
-        # self._plot_controls()
+        self._plot_controls()
+
+        self._plot_cloud(u0_samples, weights, u0)
+        self._plot_hist(u0_samples, weights, u0)
+
         # self._plot_du_and_Neff()
-        # self._plot_cloud(u0_samples, weights, u0)
-        # self._plot_hist(u0_samples, weights, u0)
         self._plot_action_sequence(mean_u, best_u, filt_u)
+
+        # self._plot_throttle_hists(u0_samples, weights, u0)
 
         self.fig.tight_layout()
 
@@ -90,6 +103,140 @@ class OnlineMppiPlotter:
             self.fig.savefig(fpath, dpi=150, bbox_inches="tight")
 
         plt.pause(0.001)
+    def _plot_throttle_hists(self, u0_samples, weights, u0):
+        axL = self.ax_hist
+        axL.clear()
+
+        # --- REMOVE OLD RIGHT AXIS IF IT EXISTS ---
+        if hasattr(self, "ax_hist_twin_y") and self.ax_hist_twin_y is not None:
+            try:
+                self.ax_hist_twin_y.remove()
+            except:
+                pass
+            self.ax_hist_twin_y = None
+
+        axL.set_title("Throttle samples (unweighted vs weighted)")
+        axL.set_xlabel("throttle")
+        axL.set_ylabel("count")
+        axL.grid(True)
+
+        # Executed control (same x for both)
+        axL.axvline(float(u0[0]), linestyle="--", color="black", linewidth=1.5, label="u0 exec")
+
+        if u0_samples is None or weights is None:
+            axL.text(0.5, 0.5, "No sample data", ha="center", va="center")
+            return
+
+        u0_samples = np.asarray(u0_samples)
+        weights = np.asarray(weights)
+        throttle = u0_samples[:, 0]
+
+        # --- LEFT AXIS: unweighted histogram (counts) ---
+        axL.hist(
+            throttle,
+            bins=30,
+            alpha=0.6,
+            color="tab:blue",
+            label="unweighted"
+        )
+
+        # --- RIGHT AXIS: weighted histogram (probability mass) ---
+        axR = axL.twinx()
+        self.ax_hist_twin_y = axR  # store it so we can remove it next iteration
+        axR.set_ylabel("probability mass")
+        axR.set_ylim(0.0, 0.5)
+
+        w_sum = np.sum(weights)
+        if w_sum > 0:
+            axR.hist(
+                throttle,
+                bins=30,
+                weights=weights / w_sum,
+                alpha=0.6,
+                color="tab:green",
+                label="weighted"
+            )
+
+        # --- combined legend ---
+        hL, lL = axL.get_legend_handles_labels()
+        hR, lR = axR.get_legend_handles_labels()
+        axL.legend(hL + hR, lL + lR, loc="upper right")
+
+    # def _plot_throttle_hists(self, u0_samples, weights, u0):
+    #     ax = self.ax_hist
+    #     ax.clear()
+    #
+    #     ax.set_title("Throttle samples (unweighted vs weighted)")
+    #     ax.set_xlabel("throttle")
+    #     ax.set_ylabel("count / weight mass")
+    #     ax.grid(True)
+    #
+    #     # Executed control
+    #     ax.axvline(float(u0[0]), linestyle="--", color="black", linewidth=1.5, label="u0 exec")
+    #
+    #     if u0_samples is None or weights is None:
+    #         ax.text(0.5, 0.5, "No sample data", ha="center", va="center")
+    #         return
+    #
+    #     u0_samples = np.asarray(u0_samples)
+    #     weights = np.asarray(weights)
+    #
+    #     throttle = u0_samples[:, 0]
+    #
+    #     # --- Unweighted histogram (blue) ---
+    #     ax.hist(
+    #         throttle,
+    #         bins=30,
+    #         alpha=0.5,
+    #         label="unweighted"
+    #     )
+    #
+    #     # --- Weighted histogram (green, normalized) ---
+    #     w_sum = np.sum(weights)
+    #     if w_sum > 0:
+    #         ax.hist(
+    #             throttle,
+    #             bins=30,
+    #             weights=weights / w_sum,
+    #             alpha=0.5,
+    #             label="weighted"
+    #         )
+    #
+    #     ax.legend()
+    #
+    # def _plot_throttle_hists(self, u0_samples, weights, u0):
+    #     axL = self.ax_hist_unw
+    #     axR = self.ax_hist_w
+    #
+    #     axL.clear()
+    #     axR.clear()
+    #
+    #     axL.set_title("Throttle samples (unweighted)")
+    #     axR.set_title("Throttle samples (weighted)")
+    #
+    #     for ax in (axL, axR):
+    #         ax.grid(True)
+    #         ax.set_xlabel("throttle")
+    #         ax.axvline(float(u0[0]), linestyle="--", linewidth=1.5)
+    #
+    #     if u0_samples is None or weights is None:
+    #         axL.text(0.5, 0.5, "No sample data", ha="center", va="center")
+    #         axR.text(0.5, 0.5, "No sample data", ha="center", va="center")
+    #         return
+    #
+    #     u0_samples = np.asarray(u0_samples)
+    #     weights = np.asarray(weights)
+    #
+    #     throttle = u0_samples[:, 0]
+    #
+    #     # Left: unweighted
+    #     axL.hist(throttle, bins=30, alpha=0.7)
+    #
+    #     # Right: weighted (normalised)
+    #     w_sum = np.sum(weights)
+    #     if w_sum > 0:
+    #         axR.hist(throttle, bins=30, weights=weights / w_sum, alpha=0.7)
+    #         axR.set_ylabel("probability mass")
 
     def _plot_controls(self):
         self.ax_u.clear()
@@ -113,19 +260,25 @@ class OnlineMppiPlotter:
                 pass
             self.ax_duNeff_twin = None
 
-        self.ax_duNeff.set_title("|Δu0| and N_eff")
+        # self.ax_duNeff.set_title("|Δu0| and N_eff")
+        #
+        # # primary plot (Δu0)
+        # self.ax_duNeff.plot(self.t_hist, np.abs(self.du_throttle_hist), label="|Δth|")
+        # self.ax_duNeff.plot(self.t_hist, np.abs(self.du_steer_hist), label="|Δst|")
+        # self.ax_duNeff.set_xlabel("step")
+        # self.ax_duNeff.set_ylabel("|Δu0|")
+        # self.ax_duNeff.grid(True)
 
-        # primary plot (Δu0)
-        self.ax_duNeff.plot(self.t_hist, np.abs(self.du_throttle_hist), label="|Δth|")
-        self.ax_duNeff.plot(self.t_hist, np.abs(self.du_steer_hist), label="|Δst|")
+        self.ax_duNeff.set_title("|Δu0| and N_eff")
+        self.ax_duNeff.plot(self.t_hist, self.Neff_hist, linestyle="--", color="tab:green")
+        self.ax_duNeff.set_ylabel("N_eff")
         self.ax_duNeff.set_xlabel("step")
-        self.ax_duNeff.set_ylabel("|Δu0|")
         self.ax_duNeff.grid(True)
 
         # secondary y-axis
-        self.ax_duNeff_twin = self.ax_duNeff.twinx()
-        self.ax_duNeff_twin.plot(self.t_hist, self.Neff_hist, linestyle="--", color="tab:green")
-        self.ax_duNeff_twin.set_ylabel("N_eff")
+        # self.ax_duNeff_twin = self.ax_duNeff.twinx()
+        # self.ax_duNeff_twin.plot(self.t_hist, self.Neff_hist, linestyle="--", color="tab:green")
+        # self.ax_duNeff_twin.set_ylabel("N_eff")
 
         # merge legends
         lines1, labels1 = self.ax_duNeff.get_legend_handles_labels()
@@ -216,11 +369,11 @@ class OnlineMppiPlotter:
         ax.plot(range(T), mean_action[:,1], label="mean steering")
 
         # Plot best trajectory
-        # ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
-        # ax.plot(range(T), best_traj[:,1], 'g--', alpha=0.6, label="best steering")
+        #ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
+        #ax.plot(range(T), best_traj[:,1], 'g--', alpha=0.6, label="best steering")
 
         # Plot filtered trajectory
-        # ax.plot(range(T), best_traj[:,0], 'r--', alpha=0.6, label="best throttle")
-        # ax.plot(range(T), filter_traj[:,1], 'g', alpha=0.6, label="filtered steering")
+        #ax.plot(range(T), filter_traj[:,0], alpha=0.6, label="best throttle filtered")
+        #ax.plot(range(T), filter_traj[:,1], alpha=0.6, label="best steering filtered")
 
         ax.legend()

@@ -9,7 +9,7 @@ import datetime
 from std_msgs.msg import Float32, Float32MultiArray, Int32, String
 import json
 import numpy as np
-from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, RateAugmentedDynamics
+from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, RateAugmentedDynamics, DynLimRateAugmentedDynamics
 from simulator_ros import SimulatorROS
 from run_mppi_ros import ROSObjective
 import yaml
@@ -34,6 +34,9 @@ class DARTLogger:
         self.total_expected_cost = 0.0
         self.last_cmd_time = 0.0
 
+        self.run_idx = 0
+        self.phase = "RUNNING"
+
         car = rospy.get_param("~car_number", 1)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.env = env
@@ -53,10 +56,12 @@ class DARTLogger:
             "max_laps": None, "expected_cost": 0.0,
             "throttle_rate": 0.0, "steering_rate": 0.0,
             "obstacle_x": None, "obstacle_y": None, "obstacle_yaw": None, "obstacle_dist": None,
+            "temperature": None, "eta": None,"covariance": None, "scale": None,
         }
         self.costs = {
             "lat_cost": 0.0, "lag_cost": 0.0, "heading_cost": 0.0,
             "speed_cost": 0.0, "vy_cost": 0.0, "omega_cost": 0.0,
+            "poss_cost": 0.0,
         }
 
         rospy.Subscriber(f"/vicon/jetracer{car}", PoseWithCovarianceStamped, self.cb_pose, queue_size=50)
@@ -73,20 +78,14 @@ class DARTLogger:
 
         rospy.Subscriber("/obstacles", MarkerArray, self.cb_obstacle, queue_size=1)
 
+        rospy.Subscriber("/dyn_temp", Float32MultiArray, self.cb_dyn_temp, queue_size=1)
+
+        rospy.Subscriber("/dyn_cov", Float32MultiArray, self.cb_dyn_cov, queue_size=1)
+
         self.meta = { "mppi": "unknown","mode": "unknown", "mppi_model": "unknown", "sim_model": "unknown", "track_choice": "unknown", "dt": float('nan'), "V_target": float('nan'), "vel_mode": "unknown", "obstacle": float('nan')}
         rospy.Subscriber("mppi_meta", String, self.cb_meta, queue_size=1)
 
-        self.outfile = out
-        self.csvfile = open(self.outfile, "w", newline="")
-        self.writer = csv.writer(self.csvfile)
-        self.writer.writerow([
-            "mppi_config","mppi_type", "mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps","Vel_estimator","Use_obstacle",
-            "weights", "lap_time", "total expected cost",
-            "t", "x", "y", "yaw", "vx", "vy", "omega","vx est", "vy est", "omega est",
-            "throttle", "steering","throttle rate", "steering rate", "speed", "beta",
-            "comp_time","cmd_time", "lat cost", "lag cost", "heading cost", "speed cost", "vy cost", "omega cost",
-            "obstacle_x", "obstacle_y", "obstacle_yaw","obstacle_dist"
-        ])
+        self._open_new_csv()
 
         self.max_laps = laps
         self.logging_enabled = True
@@ -117,6 +116,74 @@ class DARTLogger:
 
 
 
+    def _make_outfile(self):
+        car = rospy.get_param("~car_number", 4)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Keep your existing naming scheme, just add run index
+        prefix = "dart" if self.env == "sim" else "lab"
+        return f"/home/maarten/Documents/Thesis/log_Dart/{prefix}_log_car{car}_{timestamp}_run{self.run_idx:02d}.csv"
+
+    def _open_new_csv(self):
+        # Close previous file if open
+        try:
+            if hasattr(self, "csvfile") and self.csvfile:
+                self.csvfile.flush()
+                self.csvfile.close()
+        except Exception:
+            pass
+
+        self.outfile = self._make_outfile()
+        self.csvfile = open(self.outfile, "w", newline="")
+        self.writer = csv.writer(self.csvfile)
+
+        # Write header (copy your existing header exactly)
+        self.writer.writerow([
+            "mppi_config","mppi_type", "mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps","Vel_estimator","Use_obstacle",
+            "weights", "lap_time", "total expected cost",
+            "t", "x", "y", "yaw", "vx", "vy", "omega","vx est", "vy est", "omega est",
+            "throttle", "steering","throttle rate", "steering rate", "speed", "beta",
+            "comp_time","cmd_time", "lat cost", "lag cost", "heading cost", "speed cost", "vy cost", "omega cost","poss cost",
+            "obstacle_x", "obstacle_y", "obstacle_yaw","obstacle_dist","temperature","eta","covariance","scale"
+        ])
+        self.csvfile.flush()
+        rospy.loginfo(f"[logger_node] Opened new log file: {self.outfile}")
+
+    def _reset_for_next_run(self):
+        # Reset all “first row / meta / readiness” gating so the next run logs cleanly
+        self.ready = False
+        self.seen = {"pose": False, "throttle": False, "steering": False, "comp": False}
+
+        self.meta_received = False
+        self.meta_written_once = False
+        self.new_lap_time = False
+        self.logging_enabled = True
+        self.phase = "RUNNING"
+
+        self.last_cmd_time = 0.0
+        self.data["expected_cost"] = 0.0
+        self.data["lap_time"] = 0.0
+        self.data["throttle_rate"] = 0.0
+        self.data["steering_rate"] = 0.0
+        self.data["temperature"] = None
+        self.data["eta"] = None
+        self.data["covariance"] = None
+        self.data["scale"] = None
+
+        # Optional: clear costs
+        for k in self.costs:
+            self.costs[k] = 0.0
+
+    def cb_dyn_cov(self, msg):
+        with self.lock:
+            self.data["covariance"] = msg.data
+            # self.data["scale"] = msg.data[1]
+
+    def cb_dyn_temp(self, msg):
+        with self.lock:
+            self.data["temperature"] = msg.data[0]
+            self.data["eta"] = msg.data[1]
+
     def cb_action(self, msg):
         # This function publishes the path generated by the proposed action
         with self.lock:
@@ -140,13 +207,16 @@ class DARTLogger:
                 self.sim.vy = self.data["vy"]
                 self.sim.omega = self.data["omega"]
 
+
+                self.sim.throttle = self.data["throttle"]
+                self.sim.steering = self.data["steering"]
                 self.sim.publish_path(action)
-                # self.data["throttle_rate"] = action[0,0].item()
-                # self.data["steering_rate"] = action[0,1].item()
 
-                # rospy.loginfo(f"[MPPI] control sequence: {action}")
+                if CONFIG["mode"] == "s_mppi" or CONFIG["mode"] == "s_mppi_dyn_lim":
+                    self.data["throttle_rate"] = action[0,0].item()
+                    self.data["steering_rate"] = action[0,1].item()
 
-                expected_cost, weight, lat_err, lag_err, head_err, speed_err, vy, omega = self.obj.compute_expected_cost(self.sim.states)
+                expected_cost, weight, lat_err, lag_err, head_err, speed_err, vy, omega, pos_err = self.obj.compute_expected_cost(self.sim.states)
                 total_expected_cost = sum(expected_cost)
                 self.data["expected_cost"] = total_expected_cost.item()
 
@@ -157,6 +227,7 @@ class DARTLogger:
                 total_speed_cost = sum(weight.q_v * speed_err ** 2)
                 total_vy_cost = sum(weight.q_vy * vy ** 2)
                 total_omega_cost = sum(weight.q_omega * omega ** 2)
+                total_poss_cost = sum(weight.q_pos * pos_err ** 2)
 
                 self.costs["lat_cost"] = total_lat_cost.item()
                 self.costs["lag_cost"] = total_lag_cost.item()
@@ -164,6 +235,7 @@ class DARTLogger:
                 self.costs["speed_cost"] = total_speed_cost.item()
                 self.costs["vy_cost"] = total_vy_cost.item()
                 self.costs["omega_cost"] = total_omega_cost.item()
+                self.costs["poss_cost"] = total_poss_cost.item()
 
 
 
@@ -295,17 +367,34 @@ class DARTLogger:
             steer_min = CONFIG["steering_min"]
             steer_max = CONFIG["steering_max"]
 
-            # dynamics = RateAugmentedDynamics(
-            #     base_dyn=base_dynamics,
-            #     dt=self.meta["dt"],
-            #     th_min=th_min,
-            #     th_max=th_max,
-            #     steer_min=steer_min,
-            #     steer_max=steer_max,
-            #     device=CONFIG["device"],
-            # )
+            if CONFIG["mode"] == "s_mppi":
+                dynamics = RateAugmentedDynamics(
+                    base_dyn=base_dynamics,
+                    dt=self.meta["dt"],
+                    th_min=th_min,
+                    th_max=th_max,
+                    steer_min=steer_min,
+                    steer_max=steer_max,
+                    device=CONFIG["device"],
+                )
 
-            dynamics = base_dynamics
+                self.sim.mode = "s_mppi"
+
+            elif  CONFIG["mode"] == "s_mppi_dyn_lim":
+                dynamics = DynLimRateAugmentedDynamics(
+                    base_dyn=base_dynamics,
+                    dt=self.meta["dt"],
+                    th_min=th_min,
+                    th_max=th_max,
+                    steer_min=steer_min,
+                    steer_max=steer_max,
+                    device=CONFIG["device"],
+                )
+
+                self.sim.mode = "s_mppi"
+
+            else:
+                dynamics = base_dynamics
 
             self.sim.dynamics = dynamics
 
@@ -351,27 +440,61 @@ class DARTLogger:
             math.hypot(self.data["vx"], self.data["vy"]),
             math.atan2(self.data["vy"], self.data["vx"]),
             self.data["comp_time"],self.data["cmd_time"],self.costs["lat_cost"],self.costs["lag_cost"], self.costs["heading_cost"],
-            self.costs["speed_cost"], self.costs["vy_cost"], self.costs["omega_cost"],
+            self.costs["speed_cost"], self.costs["vy_cost"], self.costs["omega_cost"],self.costs["poss_cost"],
             self.data["obstacle_x"], self.data["obstacle_y"], self.data["obstacle_yaw"],
-            self.data["obstacle_dist"]
+            self.data["obstacle_dist"], self.data["temperature"], self.data["eta"],
+            self.data["covariance"], self.data["scale"],
         ]
         self.writer.writerow(row)
 
 
         self.csvfile.flush()
 
-        if self.lap > self.max_laps and self.logging_enabled:
+        # if self.lap > self.max_laps and self.logging_enabled:
+        #     self.logging_enabled = False
+        #     rospy.loginfo(f"[logger_node] Received lap {self.lap} > {self.max_laps}. Stopping logging.")
+        #     try:
+        #         self.timer.shutdown()
+        #     except Exception:
+        #         pass
+        #     try:
+        #         self.csvfile.flush()
+        #         self.csvfile.close()
+        #     except Exception:
+        #         pass
+
+        if self.lap > self.max_laps and self.phase == "RUNNING":
+            rospy.loginfo(f"[logger_node] Lap {self.lap} > {self.max_laps}. Rotating log and waiting for reset...")
+
+            # Move to next run file immediately, but do NOT log until lap counter resets
+            self.phase = "WAIT_RESET"
             self.logging_enabled = False
-            rospy.loginfo(f"[logger_node] Received lap {self.lap} > {self.max_laps}. Stopping logging.")
-            try:
-                self.timer.shutdown()
-            except Exception:
-                pass
-            try:
-                self.csvfile.flush()
-                self.csvfile.close()
-            except Exception:
-                pass
+
+            self.run_idx += 1
+            # Ensure outfile param does not pin you to one file forever:
+            # If you launch with _outfile:=..., you likely want to ignore it after run 0.
+            # Force new auto-named file for subsequent runs:
+            rospy.set_param("~outfile", self._make_outfile())
+
+            if self.run_idx > 150:
+                self.logging_enabled = False
+                rospy.loginfo(f"[logger_node] Number of runs exceeded {self.run_idx}. Stopping logging.")
+                try:
+                    self.timer.shutdown()
+                except Exception:
+                    pass
+                try:
+                    self.csvfile.flush()
+                    self.csvfile.close()
+                except Exception:
+                    pass
+
+            else:
+
+                # rospy.sleep(2)
+                self._open_new_csv()
+                self._reset_for_next_run()
+            return
 
     def __del__(self):
         try:

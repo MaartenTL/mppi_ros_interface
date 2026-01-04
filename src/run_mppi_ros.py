@@ -15,7 +15,7 @@ from mppi_torch.mppi import MPPIPlanner
 from simulator_ros import SimulatorROS
 from functions_for_controllers import find_s_of_closest_point_on_global_path, produce_track,produce_marker_array_rviz, produce_marker_rviz, steer_angle_2_command
 import numpy as np
-from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, SVGP, RateAugmentedDynamics
+from dynamics import Kinematic_Bicycle, Dynamic_Bicycle, SVGP, RateAugmentedDynamics, DynLimRateAugmentedDynamics
 from mppi_online_plot import OnlineMppiPlotter
 # noinspection PyUnresolvedReferences
 from tf.transformations import euler_from_quaternion
@@ -117,12 +117,12 @@ class MPPIWeights:
 
         self.ter_q_lat = self.q_lat * 0.0 # 10.0
         self.ter_q_lag = self.q_lag * 0.0 # 2.0
-        self.ter_q_head = 0 # self.q_head * 10.0 # 1.0
+        self.ter_q_head = self.q_head * 0.0 # 1.0
         self.ter_q_v = self.q_v * 0.0 # 1.0
         self.ter_q_vy = self.q_vy * 0.0
         self.ter_q_omega = self.q_omega * 0.0 #0.5
 
-        self.ter_q_pos = 0 # self.q_pos * 10.0
+        self.ter_q_pos = self.q_pos * 0.0
 
         self.q_u_throttle = 0.01  #5 # 0.01
         self.q_du_throttle = 0.01  # 2 # 0.01
@@ -215,6 +215,7 @@ class ROSObjective:
         self.obst_a, self.obst_b = 0.4, 0.15  # ellipse semi-axes (m): x'-axis=a, y'-axis=b
         self.obs_pub = rospy.Publisher('obstacles', MarkerArray, queue_size=1, latch=True)
 
+
     def _softplus_hinge(self, x: torch.Tensor, sharp=25.0):
         # ≈ max(0, x) but smooth; larger 'sharp' -> steeper wall
         return torch.log1p(torch.exp(sharp * x)) / sharp
@@ -287,13 +288,13 @@ class ROSObjective:
         #         + self.weight.q_vy * torch.Tensor(vy[1:]) ** 2
         #         + self.weight.q_omega * torch.Tensor(omega[1:]) ** 2)
 
-        expected_cost = (self.weight.q_pos * pos_err ** 2
+        expected_cost = (self.weight.q_pos * pos_err # ** 2
                 + self.weight.q_head * head_err ** 2
                 + self.weight.q_v * speed_err ** 2
                 + self.weight.q_vy * torch.Tensor(vy[1:]) ** 2
                 + self.weight.q_omega * torch.Tensor(omega[1:]) ** 2)
 
-        return expected_cost, self.weight, lat_err, lag_err, head_err, speed_err, torch.Tensor(vy), torch.Tensor(omega)
+        return expected_cost, self.weight, lat_err, lag_err, head_err, speed_err, torch.Tensor(vy), torch.Tensor(omega), pos_err
 
     def terminal_costs(self, states: torch.Tensor, actions: torch.Tensor):
 
@@ -321,7 +322,7 @@ class ROSObjective:
         #         + self.weight.ter_q_vy * vy ** 2
         #         + self.weight.ter_q_omega * omega ** 2)
 
-        terminal_cost = (self.weight.ter_q_pos * pos_err ** 2
+        terminal_cost = (self.weight.ter_q_pos * pos_err # ** 2
                 + self.weight.ter_q_head * head_err ** 2
                 + self.weight.ter_q_v * speed_err ** 2
                 + self.weight.ter_q_vy * vy ** 2
@@ -369,7 +370,7 @@ class ROSObjective:
         dx = x - ref_x
         dy = y - ref_y
 
-        # lag_err = dx * self.ref_yaw_cos[self.counter-1] + dy * self.ref_yaw_sin[self.counter-1]
+        lag_err = dx * self.ref_yaw_cos[self.counter-1] + dy * self.ref_yaw_sin[self.counter-1]
         lat_err = -dx * self.ref_yaw_sin[self.counter-1] + dy * self.ref_yaw_cos[self.counter-1]
         head_err = self.wrap_angle(yaw - ref_yaw)
         speed = torch.sqrt(vx ** 2 + vy ** 2)
@@ -384,18 +385,29 @@ class ROSObjective:
         # v_along = vx * cy + vy * sy
         # speed_err = v_along - V_target
 
-        # cost = (self.weight.q_lat * lat_err ** 2
-        #         + self.weight.q_lag * lag_err ** 2
+        # print(f"x: {x}")
+        # print(f"po error: {lat_err}")
+        # print(f"vx: {vx}")
+        # print(f"velocity along lateral: {v_along}")
+        # print(f"speed error: {speed_err}")
+
+
+        cost = (self.weight.q_lat * lat_err ** 2
+                + self.weight.q_lag * lag_err ** 2
+                + self.weight.q_head * head_err ** 2
+                + self.weight.q_v * speed_err ** 2
+                + self.weight.q_vy * vy ** 2
+                + self.weight.q_omega * omega ** 2)
+
+        # cost = (self.weight.q_pos * pos_err #** 2
         #         + self.weight.q_head * head_err ** 2
         #         + self.weight.q_v * speed_err ** 2
         #         + self.weight.q_vy * vy ** 2
         #         + self.weight.q_omega * omega ** 2)
 
-        cost = (self.weight.q_pos * pos_err ** 2
-                + self.weight.q_head * head_err ** 2
-                + self.weight.q_v * speed_err ** 2
-                + self.weight.q_vy * vy ** 2
-                + self.weight.q_omega * omega ** 2)
+        # # reverse penalty (only when moving opposite to path tangent)
+        # rev = torch.clamp(-v_along, min=0.0)  # = max(0, -v_along)
+        # cost += 100000.0 * (rev ** 2)  # or rev (L1) if you prefer
 
         half_w = self.lane_width * 0.5
         excess = torch.abs(lat_err) - (half_w - self.lane_margin)
@@ -734,6 +746,393 @@ rviz_controls_pub = rospy.Publisher(
             queue_size=1
         )
 
+def reset_run():
+    global planner, obj, last_throttle, last_steer, track_choice, nx, global_path_message, sim_dynamic, run_counter, dynamics
+
+    rospy.logwarn("[mppi_ros] Max laps reached. Resetting for next run...")
+
+    # 0) send zero command while resetting
+    try:
+        sim.send_control(torch.tensor([0.0, 0.0], dtype=torch.float32))
+    except Exception:
+        pass
+    # 2) reset objective "time" and lap bookkeeping
+    # obj.counter = 0
+    # obj.previous_path_index = 0
+    # obj.lap_count = 0
+    # obj.lap_start_time = time.time()
+    #
+    # # publish latched lap_count reset so logger re-arms
+
+    #
+    # # (optional) reset dynamic obstacle progress
+    # obj.obs_s_now = 200.0
+
+    # # 3) reset integrator memory for s-mppi variants
+    # if nx == 8:
+    #     last_throttle = 0.0
+    #     last_steer = 0.0
+
+    # if CONFIG["mode"] == "mppi" and cfg["update_lambda"] == False and cfg["lambda_"] == 0.005:
+    #     cfg["lambda_"] = 0.05
+    #     rospy.loginfo("MPPI with 0.05 temperature -----------------------------------------")
+    #
+    # elif CONFIG["mode"] == "mppi" and cfg["update_lambda"] == False and cfg["lambda_"] == 0.05 and cfg["update_cov"] == False:
+    #     cfg["lambda_"] = 0.5
+    #     rospy.loginfo("MPPI with 0.5 temperature -----------------------------------------")
+    #
+    # elif CONFIG["mode"] == "mppi" and cfg["update_lambda"] == False and cfg["lambda_"] == 0.5 and cfg["update_cov"] == False:
+    #     cfg["lambda_"] = 5
+    #     rospy.loginfo("MPPI with 5.0 temperature -----------------------------------------")
+    #
+    # # elif CONFIG["mode"] == "mppi" and cfg["update_lambda"] == False and cfg["lambda_"] == 0.05 and cfg["update_cov"] == False:
+    # #     cfg["update_lambda"] = True
+    # #     rospy.loginfo("MPPI with dynamic temperature -----------------------------------------")
+    #
+    # elif CONFIG["mode"] == "mppi" and cfg["update_lambda"] == True and cfg["update_cov"] == False:
+    #     cfg["update_cov"] = True
+    #     rospy.loginfo("MPPI with dynamic temperature and dynamic covariance -----------------------------------------")
+    #
+    # elif CONFIG["mode"] == "mppi" and cfg["update_lambda"] == True and cfg["update_cov"] == True:
+    #     cfg["update_lambda"] = False
+    #     rospy.loginfo("MPPI with dynamic covariance -----------------------------------------")
+    # else:
+    #     sim_dynamic = True
+    #     cfg["update_cov"] = False
+    #     cfg["lambda_"] = 0.005
+    #     rospy.loginfo("Starting dynamic simulation loop -----------------------------------------")
+
+    # if run_counter == 4:
+    #
+    #     run_counter = 0
+    #
+    #     if CONFIG["mode"] == "mppi" and cfg["update_cov"] == False and cfg["pre_filter"] == "off":
+    #         CONFIG["mode"] = "s_mppi"
+    #         rospy.loginfo("S-MPPI run set ready -----------------------------------------")
+    #
+    #         dynamics = RateAugmentedDynamics(
+    #             base_dyn=base_dynamics,
+    #             dt=CONFIG["dt"],
+    #             th_min=th_min,
+    #             th_max=th_max,
+    #             steer_min=steer_min,
+    #             steer_max=steer_max,
+    #             device=CONFIG["device"],
+    #         )
+    #         nx = 8
+    #
+    #         last_throttle = 0.0
+    #         last_steer = 0.0
+    #
+    #         cfg["u_min"] = [-0.5, -3.0]
+    #         cfg["u_max"] = [0.5, 3.0]
+    #         cfg["noise_sigma"] = [[0.2, 0.0], [0., 1.0]]
+    #
+    #     elif CONFIG["mode"] == "s_mppi":
+    #         CONFIG["mode"] = "s_mppi_dyn_lim"
+    #
+    #         dynamics = DynLimRateAugmentedDynamics(
+    #             base_dyn=base_dynamics,
+    #             dt=CONFIG["dt"],
+    #             th_min=th_min,
+    #             th_max=th_max,
+    #             steer_min=steer_min,
+    #             steer_max=steer_max,
+    #             device=CONFIG["device"],
+    #         )
+    #
+    #         nx = 8
+    #
+    #         last_throttle = 0.0
+    #         last_steer = 0.0
+    #
+    #         cfg["u_min"] = [-0.5, -3.0]
+    #         cfg["u_max"] = [0.5, 3.0]
+    #         cfg["noise_sigma"] = [[0.2, 0.0], [0., 1.0]]
+    #
+    #         rospy.loginfo("S-MPPI with dynamic limits run set ready -----------------------------------------")
+    #
+    #     elif CONFIG["mode"] == "s_mppi_dyn_lim":
+    #         CONFIG["mode"] = "mppi"
+    #         cfg["update_cov"] = True
+    #
+    #         cfg["u_min"] = [0.0, -1.0]
+    #         cfg["u_max"] = [1.0, 1.0]
+    #         cfg["noise_sigma"] = [[0.3, 0.0], [0., 0.5]]
+    #
+    #         rospy.loginfo("MPPI with dynamic variance run set ready -----------------------------------------")
+    #
+    #     elif cfg["update_cov"] == True:
+    #         cfg["update_cov"] = False
+    #         cfg["pre_filter"] = "lowpass"
+    #         cfg["noise_sigma"] = [[0.1, 0.0], [0., 0.2]]
+    #
+    #         rospy.loginfo("MPPI with lowpass filtering run set ready -----------------------------------------")
+    #
+    #     elif cfg["pre_filter"] == "lowpass" and CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 1.5:
+    #         CONFIG["v_target"] = 2.5
+    #         cfg["pre_filter"] = "off"
+    #
+    #     elif cfg["pre_filter"] == "lowpass" and CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 2.5:
+    #         track_choice = "racetrack_vicon"
+    #         obj.s_vals_global_path, \
+    #             obj.x_vals_global_path, \
+    #             obj.y_vals_global_path, \
+    #             obj.s_4_local_path, \
+    #             obj.x_4_local_path, \
+    #             obj.y_4_local_path, \
+    #             obj.dx_ds, obj.dy_ds, obj.d2x_ds2, obj.d2y_ds2, \
+    #             obj.k_vals_global_path, \
+    #             obj.k_4_local_path = generate_path_data(track_choice)
+    #
+    #         rospy.loginfo("Racetrack started with low velocity -----------------------------------------")
+    #         CONFIG["track"] = track_choice
+    #         CONFIG["v_target"] = 1.5
+    #         cfg["pre_filter"] = "off"
+    #
+    #     elif cfg["pre_filter"] == "lowpass" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 1.5:
+    #         rospy.loginfo("Racetrack started with high velocity -----------------------------------------")
+    #         CONFIG["v_target"] = 2.5
+    #         cfg["pre_filter"] = "off"
+    #
+    #     elif cfg["pre_filter"] == "lowpass" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 2.5:
+    #         track_choice = "simple_smooth"
+    #
+    #         rospy.loginfo("Dynamic simulation model started -----------------------------------------")
+    #         CONFIG["track"] = track_choice
+    #         CONFIG["v_target"] = 1.5
+    #         cfg["pre_filter"] = "off"
+    #         sim_dynamic = True
+    #
+    #     elif cfg["pre_filter"] == "lowpass" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 2.5 and sim_dynamic == True:
+    #
+    #         os._exit(0)
+    #         # track_choice = "simple_smooth"
+    #         #
+    #         # CONFIG["track"] = track_choice
+    #         # CONFIG["v_target"] = 1.5
+    #         # cfg["pre_filter"] = "off"
+    #         # sim_dynamic = False
+    # else:
+    #     run_counter += 1
+    #
+    # if run_counter == 1:
+    #
+    #     run_counter = 0
+    #
+    #     if CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 1.5:
+    #         rospy.loginfo("High velocity simple track started -----------------------------------------")
+    #         CONFIG["v_target"] = 2.5
+    #
+    #     elif CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 2.5:
+    #         rospy.loginfo("Low velocity race track started -----------------------------------------")
+    #         track_choice = "racetrack_vicon"
+    #         CONFIG["track"] = track_choice
+    #         CONFIG["v_target"] = 1.5
+    #
+    #     elif CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 1.5:
+    #         rospy.loginfo("High velocity race track started -----------------------------------------")
+    #         track_choice = "racetrack_vicon"
+    #
+    #         CONFIG["v_target"] = 2.5
+    #
+    #     elif CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 2.5 and sim_dynamic == False:
+    #         rospy.loginfo("Dynamic simulation model started -----------------------------------------")
+    #         track_choice = "simple_smooth"
+    #         CONFIG["track"] = track_choice
+    #         CONFIG["v_target"] = 1.5
+    #         sim_dynamic = True
+    #
+    #     else:
+    #         rospy.loginfo("Ending loop -----------------------------------------")
+    #         os.exit(0)
+    #
+    # else:
+    #     run_counter += 1
+
+    # if run_counter == 0:
+    #     cfg["noise_sigma"] = [[0.1, 0.0], [0., 0.5]]
+    #
+    # if run_counter == 1:
+    #     cfg["noise_sigma"] = [[0.2, 0.0], [0., 0.5]]
+    #
+    # if run_counter == 2:
+    #     cfg["noise_sigma"] = [[0.3, 0.0], [0., 0.5]]
+    #
+    # if run_counter == 3:
+    #     cfg["noise_sigma"] = [[0.2, 0.0], [0., 0.3]]
+    #
+    # if run_counter == 4:
+    #     cfg["noise_sigma"] = [[0.1, 0.0], [0., 0.5]]
+    #
+    # if run_counter == 5:
+    #     if cfg["lambda_"] == 0.05:
+    #         cfg["lambda_"] = 0.1
+    #     elif cfg["lambda_"] == 0.1:
+    #         cfg["lambda_"] = 0.25
+    #     elif cfg["lambda_"] == 0.25:
+    #         cfg["lambda_"] = 0.5
+    #     elif cfg["lambda_"] == 0.5:
+    #         cfg["lambda_"] = 1.0
+    #     elif cfg["lambda_"] == 1.0:
+    #         cfg["lambda_"] = 2.0
+    #     elif cfg["lambda_"] == 2.0:
+    #         cfg["lambda_"] = 5.0
+    #     elif cfg["lambda_"] == 5.0:
+    #         cfg["lambda_"] = 10.0
+    #     elif cfg["lambda_"] == 10.0:
+    #         cfg["lambda_"] = 20.0
+    #     elif cfg["lambda_"] == 20.0:
+    #         cfg["lambda_"] = 50.0
+    #
+    #     cfg["noise_sigma"] = [[0.1, 0.0], [0., 0.3]]
+    #     run_counter = -1
+
+    # run_counter += 1
+
+    if run_counter == 4:
+
+        run_counter = 0
+
+        if CONFIG["mode"] == "s_mppi":
+            CONFIG["mode"] = "s_mppi_dyn_lim"
+
+            dynamics = DynLimRateAugmentedDynamics(
+                base_dyn=base_dynamics,
+                dt=CONFIG["dt"],
+                th_min=th_min,
+                th_max=th_max,
+                steer_min=steer_min,
+                steer_max=steer_max,
+                device=CONFIG["device"],
+            )
+
+            nx = 8
+
+            last_throttle = 0.0
+            last_steer = 0.0
+
+            rospy.loginfo("S-MPPI with dynamic limits  -----------------------------------------")
+
+        elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 1.5:
+
+            CONFIG["mode"] = "s_mppi"
+            dynamics = RateAugmentedDynamics(
+                base_dyn=base_dynamics,
+                dt=CONFIG["dt"],
+                th_min=th_min,
+                th_max=th_max,
+                steer_min=steer_min,
+                steer_max=steer_max,
+                device=CONFIG["device"],
+            )
+
+            last_throttle = 0.0
+            last_steer = 0.0
+
+            CONFIG["v_target"] = 2.5
+
+            rospy.loginfo("S-MPPI simple track high velocity -----------------------------------------")
+
+        elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 2.5:
+            track_choice = "racetrack_vicon"
+            obj.s_vals_global_path, \
+                obj.x_vals_global_path, \
+                obj.y_vals_global_path, \
+                obj.s_4_local_path, \
+                obj.x_4_local_path, \
+                obj.y_4_local_path, \
+                obj.dx_ds, obj.dy_ds, obj.d2x_ds2, obj.d2y_ds2, \
+                obj.k_vals_global_path, \
+                obj.k_4_local_path = generate_path_data(track_choice)
+
+
+            CONFIG["track"] = track_choice
+            CONFIG["v_target"] = 1.5
+            CONFIG["mode"] = "s_mppi"
+            dynamics = RateAugmentedDynamics(
+                base_dyn=base_dynamics,
+                dt=CONFIG["dt"],
+                th_min=th_min,
+                th_max=th_max,
+                steer_min=steer_min,
+                steer_max=steer_max,
+                device=CONFIG["device"],
+            )
+
+            last_throttle = 0.0
+            last_steer = 0.0
+
+            rospy.loginfo("Racetrack started with low velocity -----------------------------------------")
+
+        elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 1.5:
+            rospy.loginfo("Racetrack started with high velocity -----------------------------------------")
+            CONFIG["v_target"] = 2.5
+            CONFIG["mode"] = "s_mppi"
+            dynamics = RateAugmentedDynamics(
+                base_dyn=base_dynamics,
+                dt=CONFIG["dt"],
+                th_min=th_min,
+                th_max=th_max,
+                steer_min=steer_min,
+                steer_max=steer_max,
+                device=CONFIG["device"],
+            )
+
+            last_throttle = 0.0
+            last_steer = 0.0
+
+        elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 2.5:
+            track_choice = "simple_smooth"
+
+            rospy.loginfo("Dynamic simulation model started -----------------------------------------")
+            CONFIG["mode"] = "s_mppi"
+            dynamics = RateAugmentedDynamics(
+                base_dyn=base_dynamics,
+                dt=CONFIG["dt"],
+                th_min=th_min,
+                th_max=th_max,
+                steer_min=steer_min,
+                steer_max=steer_max,
+                device=CONFIG["device"],
+            )
+
+            last_throttle = 0.0
+            last_steer = 0.0
+
+        elif cfg["pre_filter"] == "lowpass" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 2.5 and sim_dynamic == True:
+
+            os._exit(0)
+
+    else:
+        run_counter += 1
+
+    if CONFIG["env"] == "sim" and sim_dynamic:
+        reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=2)
+    elif CONFIG["env"] == "sim":
+        reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=1)
+
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"],
+                       CONFIG["use_obstacle"], CONFIG["troubleshoot"], device=CONFIG["device"])
+
+    # 4) hard reset MPPI internal memory by recreating the planner (simplest + robust)
+    planner = MPPIPlanner(
+        cfg=cfg,
+        nx=nx,
+        dynamics=dynamics.step,
+        running_cost=obj.compute_running_cost,
+    )
+    planner.terminal_state_cost = obj.terminal_costs
+
+    global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path, obj.s_vals_global_path)
+
+    # 5) re-publish meta (helps logger distinguish runs if you encode run-id later)
+    publish_meta()
+    obj.lap_pub.publish(Int32(0))
+    # small settle time to allow sim / topics to update
+    rospy.sleep(2.0)
+
+
 def publish_path(U: np.array, state):
     """
     Visualize the full MPPI-mean control sequence by rolling out
@@ -802,16 +1201,23 @@ if __name__ == "__main__":
     mppi_roll_pub = rospy.Publisher("mppi_rollouts", String, queue_size=10)
     cum_expected_cost = 0.0
 
+    dyn_temp_pub = rospy.Publisher("dyn_temp", Float32MultiArray, queue_size=1)
+
+    dyn_cov_pub = rospy.Publisher("dyn_cov", Float32MultiArray, queue_size=1)
+
     # 1) Load your existing YAML config
     CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
     cfg = CONFIG["mppi"]
 
     if CONFIG["sim_model"] == "kinematic":
         model_choice = 1
+        sim_dynamic = False
     elif CONFIG["sim_model"] == "dynamic":
         model_choice = 2
+        sim_dynamic = True
     elif CONFIG["sim_model"] == "SVGP":
         model_choice = 3
+        sim_dynamic = False
     elif CONFIG["sim_model"] == "SVGP_wet":
         model_choice = 4
 
@@ -832,46 +1238,45 @@ if __name__ == "__main__":
     steer_min = CONFIG["steering_min"]
     steer_max = CONFIG["steering_max"]
 
-    T = cfg["horizon"]
-    delta = 0.2  # something moderate
+    if CONFIG["mode"] == "s_mppi":
+        dynamics = RateAugmentedDynamics(
+            base_dyn=base_dynamics,
+            dt=CONFIG["dt"],
+            th_min=th_min,
+            th_max=th_max,
+            steer_min=steer_min,
+            steer_max=steer_max,
+            device=CONFIG["device"],
+        )
+        nx = 8
 
-    U_left = torch.zeros(T, 2);
-    U_left[:, 1] = +delta
-    U_left[:, 0] = 0.5
-    U_right = torch.zeros(T, 2);
-    U_right[:, 1] = -delta
-    U_right[:, 0] = 0.5
-    U_zero = torch.zeros(T, 2)
-    U_zero[:, 0] = 0.5
+        last_throttle = 0.0
+        last_steer = 0.0
 
-    state0 = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=torch.float32)  # [1,6]
+    elif CONFIG["mode"] == "s_mppi_dyn_lim":
+        dynamics = DynLimRateAugmentedDynamics(
+            base_dyn=base_dynamics,
+            dt=CONFIG["dt"],
+            th_min=th_min,
+            th_max=th_max,
+            steer_min=steer_min,
+            steer_max=steer_max,
+            device=CONFIG["device"],
+        )
+        nx = 8
 
-    # dynamics = RateAugmentedDynamics(
-    #     base_dyn=base_dynamics,
-    #     dt=CONFIG["dt"],
-    #     th_min=th_min,
-    #     th_max=th_max,
-    #     steer_min=steer_min,
-    #     steer_max=steer_max,
-    #     device=CONFIG["device"],
-    # )
-
-    dynamics = base_dynamics
+        last_throttle = 0.0
+        last_steer = 0.0
+    else:
+        dynamics = base_dynamics
+        nx = 6
 
     track_choice = CONFIG["track"]
 
     sim.dynamics = dynamics
-    sim.vizdynamics = dynamics
     sim.vel_mode = CONFIG["vel_mode"]
 
-    # if CONFIG["troubleshoot"] == 1:
-    #     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    #
-    #     outfile = rospy.get_param("~outfile",
-    #                               f"/home/maarten/Documents/Thesis/log_Dart/troubleshoot/1dart_log_car{car_number}_{timestamp}.csv")
-    #     csvfile = open(outfile, "w", newline="")
-    #     writer = csv.writer(csvfile)
-
+    run_counter = 0
     # 3) Objective
     obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG["use_obstacle"], CONFIG["troubleshoot"], device=CONFIG["device"])
 
@@ -880,7 +1285,7 @@ if __name__ == "__main__":
     # 4) Planner
     planner = MPPIPlanner(
         cfg=cfg,
-        nx=6,  # 6
+        nx=nx,
         dynamics=dynamics.step,
         running_cost=obj.compute_running_cost,
     )
@@ -890,7 +1295,7 @@ if __name__ == "__main__":
 
     rate = rospy.Rate(1/CONFIG["dt"])
 
-    rate = rospy.Rate(1/0.3)
+    # rate = rospy.Rate(1/0.5)
 
     counter = 0
     global_path_message_rate = 5  # publish 1 every 5 control loops
@@ -906,11 +1311,9 @@ if __name__ == "__main__":
     if CONFIG["use_obstacle"] == "static":
         obj.obstacle_Q, obj.obstacle_c = sim.get_obstacle()
 
-    # last_throttle = 0.0
-    # last_steer = 0.0
+
     dt = CONFIG["dt"]
     first = 1
-
 
     if CONFIG["troubleshoot"] == 1:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -932,11 +1335,11 @@ if __name__ == "__main__":
         # making sure that while waiting the actions are zero
         # sim.send_control(torch.tensor([0.0, 0.0]))
         # if CONFIG["troubleshoot"] == 1:
-        #     if first == 0:
-        #         input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
-        #     else:
-        #         first = 0
-        #     rospy.loginfo("Starting next MPPI iteration...")
+        #    if first == 0:
+        #        input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
+        #    else:
+        #        first = 0
+        #    rospy.loginfo("Starting next MPPI iteration...")
 
         state = sim.get_current_state(dynamics._device)
 
@@ -950,9 +1353,6 @@ if __name__ == "__main__":
         obj.counter = 0
 
         # Sending the current position and expected positions of the other agent to the objective
-
-
-
         if CONFIG["use_obstacle"] == "dynamic":
             obj.obs_s_now = (obj.obs_s_now + obj.obs_v * dt) % obj.s_vals_global_path[-1]
         elif CONFIG["use_obstacle"] == "agent":
@@ -966,36 +1366,35 @@ if __name__ == "__main__":
             rate.sleep()
             continue
 
-        # th_tensor = torch.tensor([[last_throttle]], dtype=state_est.dtype, device=state_est.device)
-        # st_tensor = torch.tensor([[last_steer]], dtype=state_est.dtype, device=state_est.device)
-        # state_control = torch.cat([state_est, th_tensor, st_tensor], dim=1)
 
         start_time = time.time()
-        with torch.inference_mode(): # don't need to keep track of the gradients
-            # 5) Compute MPPI action
-            action = planner.command(state_est)
+        if nx == 8:
+            th_tensor = torch.tensor([[last_throttle]], dtype=state_est.dtype, device=state_est.device)
+            st_tensor = torch.tensor([[last_steer]], dtype=state_est.dtype, device=state_est.device)
+            state_control = torch.cat([state_est, th_tensor, st_tensor], dim=1)
 
-            # action_rate = planner.command(state_control)
+            with torch.inference_mode():
+                action = planner.command(state_control)
 
-            # rospy.loginfo(f"action:{action_rate}")
+            dth = action[0,0].item()
+            dst = action[0,1].item()
 
-        if CONFIG["viz_rollouts"] == 1:
-            # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
-            rollouts = planner.states.detach()
-            # publish them
-            sim.publish_rollouts(rollouts)
-        #
+            last_throttle = np.clip(last_throttle + dth * dt, th_min, th_max)
+            last_steer = np.clip(last_steer + dst * dt, steer_min, steer_max)
 
-        # dth = action_rate[0,0].item()
-        # dst = np.clip(action_rate[0,1].item(), steer_min, steer_max)
-        #
-        #
-        #
-        # last_throttle = np.clip(last_throttle + dth * dt, th_min, th_max)
-        # last_steer = np.clip(last_steer + dst * dt, steer_min, steer_max)
+            throttle = last_throttle
+            steer = last_steer
+
+        else:
+            with torch.inference_mode():
+                action = planner.command(state_est)
+
+                throttle = np.clip(action[0,0].item(), th_min, th_max)
+                steer = np.clip(action[0,1].item(),steer_min, steer_max)
+
 
         steering_angle = mf.steering_2_steering_angle(
-            np.clip(action[0,1].item(),steer_min, steer_max),
+            steer,
             mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self
         )
 
@@ -1012,26 +1411,23 @@ if __name__ == "__main__":
             steer_min, steer_max
         )
 
+        sim.send_control(torch.tensor([throttle,transformed_steer], dtype=torch.float32))
+        # sim.send_control(torch.tensor([throttle, steer], dtype=torch.float32))
 
-        # print(f"transformed_steer: {transformed_steer}")
-        # print(f"old steer: {np.clip(action[0,1].item(), steer_min, steer_max)}")
+        # If dynamic temperature is one publish the temperature and eta
+        # if CONFIG["mppi"]["update_lambda"]:
+        # temp_msg = Float32MultiArray()
+        # temp_msg.data = [planner.beta, planner.eta.item()]
+        # dyn_temp_pub.publish(temp_msg)
 
-        # transformed_steer = np.clip(action[0,1].item(),steer_min, steer_max)
-
-
-
-        sim.send_control(torch.tensor([np.clip(action[0,0].item(), th_min, th_max),transformed_steer], dtype=torch.float32))
-
-        # sim.send_control(torch.tensor([last_throttle, dst], dtype=torch.float32))
-
-        # sim.send_control(torch.tensor([np.clip(dth, th_min, th_max), dst], dtype=torch.float32))
+        cov_msg = Float32MultiArray()
+        cov_msg.data = planner.cov_action.numpy()
+        dyn_cov_pub.publish(cov_msg)
 
         action_msg = Float32MultiArray()
         action_msg.data = action.reshape(-1).tolist() # list(action.to(torch.float32))
-
-
-        # safety_value.publish(1.0)
         action_publisher.publish(action_msg)
+
         # print(f"action: {action}")
 
 
@@ -1043,26 +1439,12 @@ if __name__ == "__main__":
         #
         #     csvfile.flush()
 
-
-
-
-
         elapsed_time = time.time() - start_time
         if elapsed_time > CONFIG["dt"]:
 
             rospy.loginfo(f"MPPI computation time: {elapsed_time:.4f} seconds")
 
-        # if elapsed_time > 0.2:
-        #     rospy.loginfo("sending 0 as input due to high computation time (0.2 seconds)")
-        #     sim.send_control(torch.tensor([0.0, 0.0]))
-
-        # else:
-        #     # 6) Send to vehicle
-        #     sim.send_control(action[0])
-
-
         # best_u = planner.best_traj.detach().cpu().numpy()
-
         # publish_path(best_u, state_est)
 
         # this is just to republish global path message every now and then
@@ -1108,9 +1490,13 @@ if __name__ == "__main__":
                 # 1) executed first command u0 (rate space)
                 #    action_rate might be shape (T,2) or (1,2) depending on u_per_command
                 if action.ndim == 2:
-                    u0 = action[0].detach().cpu().numpy()    # first time step
+                    # u0 = action[0].detach().cpu().numpy()    # first time step
+                    
+                    u0 = np.array([throttle, steer])
                 else:
-                    u0 = action.detach().cpu().numpy()       # already (2,)
+                    # u0 = action.detach().cpu().numpy()       # already (2,)
+                    
+                    u0 = np.array([throttle, steer])
 
                 # 2) sample cloud for first step
                 u0_samples = None
@@ -1196,7 +1582,7 @@ if __name__ == "__main__":
                         t=step_idx,
                         mean_u=mean_u,
                         best_u=best_u,
-                        filt_u=planner.test_filter_u,
+                        filt_u=planner.best_filtered,
                     )
 
             except Exception as e:
@@ -1206,6 +1592,17 @@ if __name__ == "__main__":
             #     input("Paused — press Enter...")
 
 
+
+        if CONFIG["viz_rollouts"] == 1:
+            # get the candidate trajectories NOT SHOWING THESE AS IT TAKES A LOT OF COMPUTATIONAL TIME
+            rollouts = planner.states.detach()
+            # publish them
+            sim.publish_rollouts(rollouts)
+        #
+
+        if obj.lap_count > CONFIG["laps"]:
+           reset_run()
+           continue
 
         rate.sleep()
 

@@ -7,6 +7,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import re
 from matplotlib.patches import Ellipse
+import yaml
 
 from dart_dynamic_models import model_functions,load_SVGPModel_actuator_dynamics_analytic
 import sys
@@ -17,6 +18,7 @@ mf = model_functions()
 
 from path_track_definitions import generate_path_data
 
+abs_path = os.path.dirname(os.path.abspath(__file__))
 mpl.rcParams.update({
     "axes.grid": True, "grid.linestyle": "--", "grid.alpha": 0.35
 })
@@ -26,6 +28,7 @@ BASE_DIR = "/home/maarten/Documents/Thesis/log_Dart"
 OBST_A = 0.5   # [m] semi-axis along length
 OBST_B = 0.25  # [m] semi-axis along width
 
+CONFIG = yaml.safe_load(open(f"{abs_path}/config.yaml"))
 
 def _add_direction_arrows(ax, xs, ys, num=3, color=None, frac_len=0.05, z=3):
     """Place `num` arrows along polyline (xs, ys).
@@ -262,8 +265,94 @@ def summarise_run(df, csv_path):
         "steer_rate_unstable_area": area_sr,
         "steer_rate_max": steer_rate_max,
     })
+    ste_angle = mf.steering_2_steering_angle(ste, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self)
+
+    # Decide if in rad or deg:
+    ste_is_rad = np.nanmax(np.abs(ste_angle)) < 3.5
+    if ste_is_rad:
+        ste_plot = np.rad2deg(ste_angle)  # for nicer units
+    else:
+        ste_plot = ste_angle
+
+    dthr = _diff(thr, t)
+    ddthr = _diff(dthr, t)
+
+    dste = _diff(ste_angle, t)
+    ddste = _diff(dste, t)
+
+    # Convert to consistent units for steering jerk
+    dste_deg = np.rad2deg(dste) if ste_is_rad else dste
+    ddste_deg = np.rad2deg(ddste) if ste_is_rad else ddste
+
+    out.update({
+        "thr_rate_rms": nanrms(dthr),
+        "thr_jerk_rms": nanrms(ddthr),
+        "ste_rate_rms_deg_s": nanrms(dste_deg),
+        "ste_jerk_rms_deg_s2": nanrms(ddste_deg),
+    })
+
+    thr_tv_s = tv_per_second(thr, t)
+    ste_tv_s = tv_per_second(ste, t)
+
+    thr_nsteps, thr_meanstep, thr_maxstep = step_stats(thr, eps=1e-3)
+    ste_nsteps, ste_meanstep, ste_maxstep = step_stats(ste, eps=1e-3)
+
+    out.update({
+        "thr_tv_per_s": thr_tv_s,
+        "ste_tv_per_s": ste_tv_s,
+        "thr_n_steps": thr_nsteps,
+        "thr_mean_step": thr_meanstep,
+        "thr_max_step": thr_maxstep,
+        "ste_n_steps": ste_nsteps,
+        "ste_mean_step": ste_meanstep,
+        "ste_max_step": ste_maxstep,
+    })
+
+    out["corr_dthr_dste"] = corr(_diff(thr, t), dste_deg)
+    out["corr_thr_ste"] = corr(thr, ste)
+
     return out
 
+
+def corr(a, b):
+    a = np.asarray(a, float);
+    b = np.asarray(b, float)
+    m = np.isfinite(a) & np.isfinite(b)
+    a = a[m];
+    b = b[m]
+    if len(a) < 5:
+        return np.nan
+    a = a - np.mean(a);
+    b = b - np.mean(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+
+def total_variation(y):
+    y = np.asarray(y, float)
+    m = np.isfinite(y)
+    y = y[m]
+    if len(y) < 2:
+        return np.nan
+    return float(np.sum(np.abs(np.diff(y))))
+
+
+def tv_per_second(y, t):
+    tv = total_variation(y)
+    T = float(t[-1] - t[0]) if len(t) else np.nan
+    return tv / T if T and T > 0 else np.nan
+
+
+def step_stats(y, eps=1e-6):
+    y = np.asarray(y, float)
+    m = np.isfinite(y)
+    y = y[m]
+    if len(y) < 2:
+        return np.nan, np.nan, np.nan
+    dy = np.diff(y)
+    n_steps = int(np.sum(np.abs(dy) > eps))
+    mean_step = float(np.mean(np.abs(dy[np.abs(dy) > eps]))) if n_steps else 0.0
+    max_step = float(np.max(np.abs(dy))) if len(dy) else np.nan
+    return n_steps, mean_step, max_step
 
 
 # obstacle footprint (must match ROSObjective.obst_a / obst_b)
@@ -454,10 +543,12 @@ def plot_one(df, label=None):
         ste_plot = np.rad2deg(ste_angle)  # for nicer units
     else:
         ste_plot = ste_angle
+        
+    ste_plot = ste
 
     plt.figure("Steering")
     plt.plot(df["time"], ste_plot, label=f"steering {label}" if label else "steering", drawstyle="steps-post")
-    plt.xlabel("time [s]"); plt.ylabel("steering [deg]"); plt.title("Steering"); plt.legend()
+    plt.xlabel("time [s]"); plt.ylabel("steering []"); plt.title("Steering"); plt.legend()
 
     # Rates
     if "throttle rate" in df.columns and "mode" == "s-mppi":
@@ -475,18 +566,18 @@ def plot_one(df, label=None):
     if "steering rate" in df.columns and "mode" == "s-mppi":
         plt.figure("Steering Rate")
         plt.plot(df["time"], df["steering rate"], label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
+        plt.xlabel("time [s]"); plt.ylabel("steering rate []"); plt.title("Steering Rate"); plt.legend()
 
         # dste_deg = .... has to be thought of a way to represent steering rate unitless to deg/s
 
     else:
         # Steering rate (deg/s)
-        dste = _diff(ste_angle, t)
+        dste = _diff(ste_plot, t)
         dste_deg = np.rad2deg(dste) if ste_is_rad else dste
 
         plt.figure("Steering Rate")
-        plt.plot(df["time"], dste_deg, label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
-        plt.xlabel("time [s]"); plt.ylabel("steering rate [deg/s]"); plt.title("Steering Rate"); plt.legend()
+        plt.plot(df["time"], dste, label=f"steering_rate {label}" if label else "steering_rate", drawstyle="steps-post")
+        plt.xlabel("time [s]"); plt.ylabel("steering rate []]"); plt.title("Steering Rate"); plt.legend()
 
 
     # Errors
@@ -520,6 +611,17 @@ def plot_one(df, label=None):
 
     simple_fft_plot(df["time"], ste_plot, label, title="Steering FFT")
     simple_fft_plot(df["time"], dste_deg, label, title="Steering rate FFT")
+
+    if "temperature" in df.columns:
+        plt.figure("Temperature")
+        plt.plot(t, df["temperature"], label=f"temperature {label}" if label else "temperature")
+        plt.xlabel("time [s]"); plt.ylabel("temperature [-]"); plt.title("Temperature over time"); plt.legend()
+
+        plt.figure("Eta")
+        plt.plot(t, df["eta"], label=f"eta {label}" if label else "eta")
+        #plt.axhline(CONFIG["mppi"]["eta_u_bound"], color="k", linestyle="--", linewidth=1, label="upper bound eta")
+        #plt.axhline(CONFIG["mppi"]["eta_l_bound"], color="k", linestyle="--", linewidth=1, label="lower bound eta")
+        plt.xlabel("time [s]"); plt.ylabel("eta [-]"); plt.title("Eta over time"); plt.legend()
 
 
 def simple_fft_plot(t, y,label, title="FFT"):

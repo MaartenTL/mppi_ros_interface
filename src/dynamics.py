@@ -22,46 +22,8 @@ class OmnidirectionalPointRobotDynamics:
         new_states = torch.stack([new_x, new_y, new_theta], dim=1)
         return new_states, actions
 
-# class Kinematic_Bicycle:
-#     def __init__(self, dt=0.05, device="cpu") -> None:
-#         self._dt = dt
-#         self._device = device
-#
-#     def step(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
-#         x, y, yaw, vx, vy, w = states.unbind(dim=1)
-#
-#         throttle, steer = actions.unbind(dim=1)
-#         # evaluate steering angle
-#         steering_angle = mf.steering_2_steering_angle(steer, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self, mf.e_s_self)
-#
-#         # evaluate longitudinal forces
-#         Fx = + mf.motor_force(throttle, vx, mf.a_m_self, mf.b_m_self, mf.c_m_self) \
-#              + mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self)
-#
-#         acc_x = Fx / mf.m_self  # acceleration in the longitudinal direction
-#
-#         w = vx * torch.tan(steering_angle) / (mf.lr_self + mf.lf_self)  # angular velocity
-#         vy = mf.l_COM_self * w
-#
-#         xdot1 = vx * torch.cos(yaw) - vy * torch.sin(yaw)
-#         xdot2 = vx * torch.sin(yaw) + vy * torch.cos(yaw)
-#         xdot3 = w
-#         xdot4 = acc_x
-#
-#         # 6) Euler integration to get next state
-#         x = x + xdot1 * self._dt
-#         y = y + xdot2 * self._dt
-#         yaw = yaw + xdot3 * self._dt
-#         vx = vx + xdot4 * self._dt
-#         vy = vy #s Taken from the ROS simulator
-#         w = w
-#
-#         new_states = torch.stack([x, y, yaw, vx, vy, w], dim=1)
-#
-#         return new_states,  actions
-
 class Kinematic_Bicycle:
-    def __init__(self, dt=0.05, device="cpu") -> None:
+    def __init__(self, dt=0.1, device="cpu") -> None:
         self._dt = dt
         self._device = device
 
@@ -72,7 +34,13 @@ class Kinematic_Bicycle:
             n_sub = 2
         else:
             n_sub = 1
+
+        if dt_total > 0.9:
+            n_sub = 100
+
         dt_sub = dt_total / n_sub
+
+
 
         # unpack once; we will update these inside the loop
         x, y, yaw, vx, vy, w = states.unbind(dim=1)
@@ -106,15 +74,14 @@ class Kinematic_Bicycle:
                 + mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self)
             )
 
-            # th_abs = torch.abs(throttle)
-            # th_sign = torch.sign(throttle)  # -1, 0, +1
+            # # throttle, vx are tensors of same shape (e.g. [K] or [K,1])
+            # thr_abs = throttle.abs()
             #
-            # Fx_motor_mag = torch.abs(mf.motor_force(th_abs, vx, mf.a_m_self, mf.b_m_self, mf.c_m_self))
-            # Fx_motor = th_sign * Fx_motor_mag
+            # F_motor_mag = mf.motor_force(thr_abs, vx, mf.a_m_self, mf.b_m_self, mf.c_m_self).abs()
+            # F_roll = mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self)
             #
-            # Fx = Fx_motor + mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self)
-            # acc_x = Fx / mf.m_self
-
+            # # Motor follows throttle sign; rolling friction opposes motion direction.
+            # Fx = throttle.sign() * F_motor_mag + F_roll
 
             acc_x = Fx / mf.m_self  # longitudinal acceleration
             w = vx * torch.tan(steering_angle) / (mf.lr_self + mf.lf_self)  # angular velocity
@@ -136,63 +103,6 @@ class Kinematic_Bicycle:
         return new_states, actions
 
 
-# class Dynamic_Bicycle:
-#     def __init__(self, dt=0.05, device="cpu") -> None:
-#         self._dt = dt
-#         self._device = device
-#
-#     def step(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
-#         # extract states
-#         x, y, yaw, vx, vy, w = states.unbind(dim=1)
-#
-#         throttle, steer = actions.unbind(dim=1)
-#
-#         # evaluate steering angle
-#         steering_angle = mf.steering_2_steering_angle(steer, mf.a_s_self, mf.b_s_self, mf.c_s_self, mf.d_s_self,
-#                                                       mf.e_s_self)
-#
-#         # # evaluate longitudinal forces
-#         Fx_wheels = + mf.motor_force(throttle, vx, mf.a_m_self, mf.b_m_self, mf.c_m_self) \
-#                     + mf.rolling_friction(vx, mf.a_f_self, mf.b_f_self, mf.c_f_self, mf.d_f_self) \
-#                     + mf.F_friction_due_to_steering(steering_angle, vx, mf.a_stfr_self, mf.b_stfr_self, mf.d_stfr_self,
-#                                                     mf.e_stfr_self)
-#
-#         c_front = (mf.m_front_wheel_self) / mf.m_self
-#         c_rear = (mf.m_rear_wheel_self) / mf.m_self
-#
-#         # redistribute Fx to front and rear wheels according to normal load
-#         Fx_front = Fx_wheels * c_front
-#         Fx_rear = Fx_wheels * c_rear
-#
-#         # evaluate slip angles
-#         alpha_f, alpha_r = mf.evaluate_slip_angles(vx, vy, w, mf.lf_self, mf.lr_self, steering_angle)
-#
-#         # lateral forces
-#         Fy_wheel_f = mf.lateral_tire_force(alpha_f, mf.d_t_f_self, mf.c_t_f_self, mf.b_t_f_self, mf.m_front_wheel_self)
-#         Fy_wheel_r = mf.lateral_tire_force(alpha_r, mf.d_t_r_self, mf.c_t_r_self, mf.b_t_r_self, mf.m_rear_wheel_self)
-#
-#         acc_x, acc_y, acc_w = mf.solve_rigid_body_dynamics(vx, vy, w, steering_angle, Fx_front, Fx_rear, Fy_wheel_f,
-#                                                            Fy_wheel_r, mf.lf_self, mf.lr_self, mf.m_self, mf.Jz_self)
-#
-#
-#         xdot1 = vx * torch.cos(yaw) - vy * torch.sin(yaw)
-#         xdot2 = vx * torch.sin(yaw) + vy * torch.cos(yaw)
-#         xdot3 = w
-#         xdot4 = acc_x
-#         xdot5 = acc_y
-#         xdot6 = acc_w
-#
-#         # 6) Euler integration to get next state
-#         x = x + xdot1 * self._dt
-#         y = y + xdot2 * self._dt
-#         yaw = yaw + xdot3 * self._dt
-#         vx = vx + xdot4 * self._dt
-#         vy = vy + xdot5 * self._dt
-#         w = w + xdot6 * self._dt
-#
-#         new_states = torch.stack([x, y, yaw, vx, vy, w], dim=1)
-#
-#         return new_states, actions
 def _check_finite(name, tensor, vx):
     bad = ~torch.isfinite(tensor)
     if bad.any():
@@ -204,7 +114,7 @@ def _check_finite(name, tensor, vx):
 
 
 class Dynamic_Bicycle:
-    def __init__(self, dt=0.05, device="cpu") -> None:
+    def __init__(self, dt=0.1, device="cpu") -> None:
         self._dt = dt
         self._device = device
 
@@ -335,7 +245,7 @@ class RateAugmentedDynamics:
     State for MPPI: [x, y, yaw, vx, vy, w, throttle, steer]  (nx = 8)
     Action for MPPI: [dthrottle, dsteer]
     """
-    def __init__(self, base_dyn, dt=0.05,
+    def __init__(self, base_dyn, dt=0.1,
                  th_min=0.0, th_max=1.0,
                  steer_min=-1.0, steer_max=1.0,
                  device="cpu") -> None:
@@ -364,12 +274,10 @@ class RateAugmentedDynamics:
         dth, dsteer = actions.unbind(dim=1)
 
         # integrate to get actual commands, with saturation
-        # th_new = torch.clamp(th + dth * self._dt, self.th_min, self.th_max)
-        th_new = dth
+        th_new = torch.clamp(th + dth * self._dt, self.th_min, self.th_max)
 
 
-        # steer_new = torch.clamp(steer + dsteer * self._dt, self.steer_min, self.steer_max)
-        steer_new = dsteer
+        steer_new = torch.clamp(steer + dsteer * self._dt, self.steer_min, self.steer_max)
 
         # underlying dynamics still expect [throttle, steer]
         u_abs = torch.stack([th_new, steer_new], dim=1)  # [K, 2]
@@ -384,7 +292,74 @@ class RateAugmentedDynamics:
         return new_states, actions_out
 
 
+class DynLimRateAugmentedDynamics:
+    """
+    Wrap a base dynamics model so that MPPI samples [dthrottle, dsteer]
+    but the underlying model still uses [throttle, steer].
 
+    State for MPPI: [x, y, yaw, vx, vy, w, throttle, steer]  (nx = 8)
+    Action for MPPI: [dthrottle, dsteer]
+    """
+    def __init__(self, base_dyn, dt=0.1,
+                 th_min=0.0, th_max=1.0,
+                 steer_min=-1.0, steer_max=1.0,
+                 device="cpu") -> None:
+        self.base_dyn = base_dyn          # Kinematic_Bicycle or Dynamic_Bicycle
+        self._dt = dt
+        self._device = device
+        self.th_min = th_min
+        self.th_max = th_max
+        self.steer_min = steer_min
+        self.steer_max = steer_max
+
+    def step(self, states: torch.Tensor, actions: torch.Tensor, t: int):
+        """
+        states: [K, 8] = [x, y, yaw, vx, vy, w, throttle, steer]
+        actions: [K, 2] = [dthrottle, dsteer]  (what MPPI samples)
+        returns:
+            new_states: [K, 8]
+            actions_out: [K, 2]  (we return the *rates* again for costs)
+        """
+        # split state
+        x6   = states[:, :6]             # vehicle states
+        th   = states[:, 6]              # current throttle
+        steer = states[:, 7]             # current steer
+
+        # split actions as *rates*
+        dth, dsteer = actions.unbind(dim=1)
+
+        dt = self._dt
+
+        # 1) Compute dynamic feasible rate intervals so that next u stays within bounds
+        dth_min = (self.th_min - th) / dt
+        dth_max = (self.th_max - th) / dt
+
+        dsteer_min = (self.steer_min - steer) / dt
+        dsteer_max = (self.steer_max - steer) / dt
+
+        # 2) Clamp sampled rates to those dynamic intervals
+        dth = torch.clamp(dth, dth_min, dth_max)
+        dsteer = torch.clamp(dsteer, dsteer_min, dsteer_max)
+
+        # 3) Integrate to get absolute commands (now guaranteed inside bounds)
+        th_new = th + dth * dt
+        steer_new = steer + dsteer * dt
+
+        # (Optional safety: should be redundant, but harmless)
+        th_new = torch.clamp(th_new, self.th_min, self.th_max)
+        steer_new = torch.clamp(steer_new, self.steer_min, self.steer_max)
+
+        # underlying dynamics still expect [throttle, steer]
+        u_abs = torch.stack([th_new, steer_new], dim=1)  # [K, 2]
+
+        # step the base model with the absolute commands
+        x6_new, _ = self.base_dyn.step(x6, u_abs, t)
+
+        new_states = torch.cat([x6_new, th_new.unsqueeze(1), steer_new.unsqueeze(1)], dim=1)
+
+        actions_out = torch.stack([dth, dsteer], dim=1)
+
+        return new_states, actions_out
 
 
 

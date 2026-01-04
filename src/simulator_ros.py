@@ -55,6 +55,10 @@ class SimulatorROS:
         self.vy = 0.0
         self.omega = 0.0
 
+        self.mode = "mppi"
+        self.throttle = 0.0
+        self.steering = 0.0
+
 
 
 
@@ -74,9 +78,6 @@ class SimulatorROS:
 
         # Are set in the run_mppi_ros.py script
         self.dynamics = None
-        self.vizdynamics = None
-
-
 
         self.buffer_len = rospy.get_param("~buffer_len", 5)            # finite-difference window
         self.delay_compensation = rospy.get_param("~delay_comp", False)
@@ -146,7 +147,7 @@ class SimulatorROS:
         self.y_vals_global_path = None
         self.s_vals_global_path = None
 
-        self.vel_mode = "ls"
+        self.vel_mode = "fd"
 
         # ---- dynamic obstacle from MPC (other agent) ----
         self.agent_center = None   # shape (T, 2) → [x, y]
@@ -268,14 +269,16 @@ class SimulatorROS:
                 self.vx = self._vx
                 self.vy = self._vy
                 self.omega = self._omega
-            elif self.vel_mode == "fd":
-                self.vx = vx_fd
-                self.vy = vy_fd
-                self.omega = omega_fd
-            else:
+            elif self.vel_mode == "ls":
                 self.vx = vx_ls
                 self.vy = vy_ls
                 self.omega = omega_ls
+            else:
+                self.vx = vx_fd
+                self.vy = vy_fd
+                self.omega = omega_fd
+
+
 
     def _vx_cb(self, msg):
         self._vx = msg.data
@@ -485,6 +488,9 @@ class SimulatorROS:
         elif steering < -2.0:
             steering = -2
 
+
+        self.throttle = throttle
+        self.steering = steering
         # Publish
         self.throttle_pub.publish(throttle)
         self.steer_pub.publish(steering)
@@ -566,6 +572,8 @@ class SimulatorROS:
         s0 = self.get_current_state("cpu")  # torch.Tensor [1,5]
 
         state = s0
+        if self.mode == "s_mppi":
+            state = torch.cat((state , torch.tensor([[self.throttle,self.steering]])), dim=1)
 
         T = U.shape[0]
         # rospy.loginfo(f"[MPPI Logger] state: {state}")
@@ -575,6 +583,7 @@ class SimulatorROS:
         self.states = [state]
         for t in range(T):
             state, _ = self.dynamics.step(state, torch.tensor([[U[t, 0], U[t, 1]]], dtype=torch.float32),t)
+
 
             x = state[0,0].item()
             y = state[0,1].item()
