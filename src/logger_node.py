@@ -33,17 +33,22 @@ class DARTLogger:
         self.lap = 0.0
         self.total_expected_cost = 0.0
         self.last_cmd_time = 0.0
+        
+        self.num_runs = 0
 
         self.run_idx = 0
         self.phase = "RUNNING"
 
-        car = rospy.get_param("~car_number", 1)
+        self.car = rospy.get_param("~car_number", 1)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.env = env
         if env == "sim":
-            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1dart_log_car{car}_{timestamp}.csv")
+            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1dart_log_car{self.car}_{timestamp}.csv")
         elif env == "lab":
-            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1lab_log_car{car}_{timestamp}.csv")
+            out = rospy.get_param("~outfile", f"/home/maarten/Documents/Thesis/log_Dart/1lab_log_car{self.car}_{timestamp}.csv")
+            
+            self.num_runs = 2
+            
         rate_hz = rospy.get_param("~rate", 20) # equal to timestep from simulator
 
         self.lock = Lock()
@@ -64,17 +69,17 @@ class DARTLogger:
             "poss_cost": 0.0,
         }
 
-        rospy.Subscriber(f"/vicon/jetracer{car}", PoseWithCovarianceStamped, self.cb_pose, queue_size=50)
-        rospy.Subscriber(f"/vx_{car}", Float32, self.cb_vx, queue_size=100)
-        rospy.Subscriber(f"/vy_{car}", Float32, self.cb_vy, queue_size=100)
-        rospy.Subscriber(f"/omega_{car}", Float32, self.cb_omega, queue_size=100)
-        rospy.Subscriber(f"/throttle_{car}", Float32, self.cb_throttle, queue_size=100)
-        rospy.Subscriber(f"/steering_{car}", Float32, self.cb_steer, queue_size=100)
-        rospy.Subscriber(f"/comptime_{car}", Float32, self.cb_comp, queue_size=100)
+        rospy.Subscriber(f"/vicon/jetracer{self.car}", PoseWithCovarianceStamped, self.cb_pose, queue_size=50)
+        rospy.Subscriber(f"/vx_{self.car}", Float32, self.cb_vx, queue_size=100)
+        rospy.Subscriber(f"/vy_{self.car}", Float32, self.cb_vy, queue_size=100)
+        rospy.Subscriber(f"/omega_{self.car}", Float32, self.cb_omega, queue_size=100)
+        rospy.Subscriber(f"/throttle_{self.car}", Float32, self.cb_throttle, queue_size=100)
+        rospy.Subscriber(f"/steering_{self.car}", Float32, self.cb_steer, queue_size=100)
+        rospy.Subscriber(f"/comptime_{self.car}", Float32, self.cb_comp, queue_size=100)
 
-        rospy.Subscriber(f"/vx_est_{car}", Float32, self.cb_vx_est, queue_size=100)
-        rospy.Subscriber(f"/vy_est_{car}", Float32, self.cb_vy_est, queue_size=100)
-        rospy.Subscriber(f"/omega_est_{car}", Float32, self.cb_omega_est, queue_size=100)
+        rospy.Subscriber(f"/vx_est_{self.car}", Float32, self.cb_vx_est, queue_size=100)
+        rospy.Subscriber(f"/vy_est_{self.car}", Float32, self.cb_vy_est, queue_size=100)
+        rospy.Subscriber(f"/omega_est_{self.car}", Float32, self.cb_omega_est, queue_size=100)
 
         rospy.Subscriber("/obstacles", MarkerArray, self.cb_obstacle, queue_size=1)
 
@@ -98,7 +103,7 @@ class DARTLogger:
 
 
         rospy.Subscriber("/mppi_action", Float32MultiArray, self.cb_action, queue_size=1)
-        self.sim = SimulatorROS(car, 2)
+        self.sim = SimulatorROS(self.car, 2)
 
 
 
@@ -117,12 +122,11 @@ class DARTLogger:
 
 
     def _make_outfile(self):
-        car = rospy.get_param("~car_number", 4)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Keep your existing naming scheme, just add run index
         prefix = "dart" if self.env == "sim" else "lab"
-        return f"/home/maarten/Documents/Thesis/log_Dart/{prefix}_log_car{car}_{timestamp}_run{self.run_idx:02d}.csv"
+        return f"/home/maarten/Documents/Thesis/log_Dart/1{prefix}_log_car{self.car}_{timestamp}_run{self.run_idx:02d}.csv"
 
     def _open_new_csv(self):
         # Close previous file if open
@@ -384,7 +388,7 @@ class DARTLogger:
                 dynamics = DynLimRateAugmentedDynamics(
                     base_dyn=base_dynamics,
                     dt=self.meta["dt"],
-                    th_min=th_min,
+                    th_min=th_min, 
                     th_max=th_max,
                     steer_min=steer_min,
                     steer_max=steer_max,
@@ -476,7 +480,7 @@ class DARTLogger:
             # Force new auto-named file for subsequent runs:
             rospy.set_param("~outfile", self._make_outfile())
 
-            if self.run_idx > 150:
+            if self.run_idx > self.num_runs:
                 self.logging_enabled = False
                 rospy.loginfo(f"[logger_node] Number of runs exceeded {self.run_idx}. Stopping logging.")
                 try:

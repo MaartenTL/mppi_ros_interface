@@ -113,11 +113,11 @@ class MPPIWeights:
         self.q_vy = 0.0 # 0.2 # 0.2
         self.q_omega = 0.0 # 0.0
 
-        self.q_pos = 1.0
+        self.q_pos = 2.0
 
         self.ter_q_lat = self.q_lat * 0.0 # 10.0
         self.ter_q_lag = self.q_lag * 0.0 # 2.0
-        self.ter_q_head = self.q_head * 0.0 # 1.0
+        self.ter_q_head = self.q_head * 10.0 # 1.0
         self.ter_q_v = self.q_v * 0.0 # 1.0
         self.ter_q_vy = self.q_vy * 0.0
         self.ter_q_omega = self.q_omega * 0.0 #0.5
@@ -135,9 +135,21 @@ class MPPIWeights:
 
         self.w_opponent = 1000.0 # 300.0 # weight for opponent
 
+        self.q_ref_beta  = 0.1    # sideslip proxy: atan2(vy,vx) - yaw
+        self.q_ref_omega = 0.1    # yaw-rate penalty
+        self.q_ref_v     = 0.1    # speed tracking to V_target
+        self.q_ref_lag   = 0.1
+        self.q_ref_lat   = 0.5
+        self.q_ref_lane  = 100.0  # keep reference inside lane
+
+        # temperature for reference weights (higher => smoother reference)
+        self.lambda_ref  = 0.5
+        self.M = 0 # Number of frozen timesteps close to vehicle
+        self.ref_alpha = 0.8
+
 
 class ROSObjective:
-    def __init__(self, track_choice, N, dt, V_target, use_obstacle, troubleshoot, device="cpu"):
+    def __init__(self, track_choice, N, dt, V_target, use_obstacle, troubleshoot, use_ref_generator, device="cpu"):
 
         self.s_vals_global_path,\
         self.x_vals_global_path,\
@@ -215,6 +227,19 @@ class ROSObjective:
         self.obst_a, self.obst_b = 0.4, 0.15  # ellipse semi-axes (m): x'-axis=a, y'-axis=b
         self.obs_pub = rospy.Publisher('obstacles', MarkerArray, queue_size=1, latch=True)
 
+        self.rviz_ref_pub = rospy.Publisher('rviz_rollout_reference', MarkerArray, queue_size=1)
+        self.rviz_gen_ref_pub = rospy.Publisher('rviz_rollout_generator_reference', MarkerArray, queue_size=1)
+
+        # --- rollout-based lagged reference ---
+        self.use_rollout_reference = use_ref_generator
+        self.rollout_ref_valid = False
+
+        self.X0_con_plan = None  # torch [N,4] = [x,y,yaw,V]
+        self.X0_gen_plan = None  # torch [N,4] = [x,y,yaw,V]
+        self.ref_yaw_cos_rollout_prev = None
+        self.ref_yaw_sin_rollout_prev = None
+
+        self.rollout_ref_alpha = self.weight.ref_alpha  # 0.0 = use only new, 0.7 = heavy inertia
 
     def _softplus_hinge(self, x: torch.Tensor, sharp=25.0):
         # ≈ max(0, x) but smooth; larger 'sharp' -> steeper wall
@@ -223,6 +248,638 @@ class ROSObjective:
     def wrap_angle(self, x: torch.Tensor) -> torch.Tensor:
         # wrap into [-π, π]
         return torch.atan2(torch.sin(x), torch.cos(x))
+
+    def compute_running_cost(self, state: torch.Tensor):
+        """
+        state: Tensor[K,5] = [x, y, yaw, vx, vy]
+        self.nav_goal: Tensor[4] = [ref_x, ref_y, ref_yaw, V_target]
+        """
+        # unpack
+        x, y, yaw, vx, vy, omega = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4], state[:, 5]
+
+        ref_x, ref_y, ref_yaw, V_target = self.get_current_goal()  # each a scalar tensor
+
+        # errors
+        dx = x - ref_x
+        dy = y - ref_y
+
+        lag_err = dx * self.ref_yaw_cos[self.counter-1] + dy * self.ref_yaw_sin[self.counter-1]
+        lat_err = -dx * self.ref_yaw_sin[self.counter-1] + dy * self.ref_yaw_cos[self.counter-1]
+        head_err = self.wrap_angle(yaw - ref_yaw)
+        speed = torch.sqrt(vx ** 2 + vy ** 2)
+        speed_err = speed - V_target
+        pos_err = dx ** 2 + dy ** 2
+
+
+        # cost = (self.weight.q_lat * lat_err ** 2
+        #          + self.weight.q_lag * lag_err ** 2
+        #         + self.weight.q_head * head_err ** 2
+        #         + self.weight.q_v * speed_err ** 2
+        #         + self.weight.q_vy * vy ** 2
+        #         + self.weight.q_omega * omega ** 2)
+
+        cost = (self.weight.q_pos * pos_err #** 2
+                + self.weight.q_head * head_err ** 2
+                + self.weight.q_v * speed_err ** 2
+                + self.weight.q_vy * vy ** 2
+                + self.weight.q_omega * omega ** 2)
+
+        half_w = self.lane_width * 0.5
+        excess = torch.abs(lat_err) - (half_w - self.lane_margin)
+
+        c_lane = torch.clamp(self.weight.w_lane * self._softplus_hinge(excess), 0, 300)
+        cost = cost + c_lane
+
+        # throttle = state[:,6]
+        # steering = state[:,7]
+        #
+        # control_cost = self.weight.q_u_throttle * throttle ** 2 + self.weight.q_u_steering * steering ** 2
+        #
+        # cost = cost + control_cost
+
+        if self.use_obstacle:
+            c_opponent = self.obstacle_cost(x, y)
+
+            cost += c_opponent
+
+        # if self.use_obstacle:
+        #     idx = max(self.counter - 1, 0)
+        #     c_t = self.obs_c_seq[idx]  # shape [2]
+        #     c_opponent = self._obstacle_cost(x, y, c=c_t)
+        #     cost += c_opponent
+
+        if self.use_dyn_obstacle:
+            idx = max(self.counter - 1, 0)
+            c_t = self.obs_c_seq[idx]  # [2]
+            yaw_t = self.obs_yaw_seq[idx]  # scalar tensor
+            c_opponent = self.dyn_obstacle_cost(x, y, c=c_t, yaw=yaw_t)
+            cost += c_opponent
+
+
+        # cost = (
+        #         0.1 * (lag_err ** 2) +
+        #         0.1 * (lat_err ** 2)
+        #         + c_lane
+        #         + 0.01 * (omega ** 2)
+        #         + 0.1 * (speed_err ** 2)
+        # )  # [K,T]
+
+
+
+        return cost
+
+    def terminal_costs(self, states: torch.Tensor, actions: torch.Tensor):
+
+        x, y, yaw, vx, vy, omega = states[:, -1, 0], states[:, -1, 1], states[:, -1, 2], states[:, -1, 3], states[:, -1, 4], states[:, -1, 5]
+        ref_x = self.X0_con_plan[-1,0]
+        ref_y = self.X0_con_plan[-1,1]
+        ref_yaw = self.X0_con_plan[-1,2]
+        V_target = self.X0_con_plan[-1,3]
+
+        dx = x - ref_x
+        dy = y - ref_y
+
+        # lag_err = dx * self.ref_yaw_cos[-1] + dy * self.ref_yaw_sin[-1]
+        lat_err = -dx * self.ref_yaw_sin[-1] + dy * self.ref_yaw_cos[-1]
+        head_err = self.wrap_angle(yaw - ref_yaw)
+        speed = torch.sqrt(vx ** 2 + vy ** 2)
+        speed_err = speed - V_target
+
+        pos_err = dx ** 2 + dy ** 2
+
+        # terminal_cost = (self.weight.ter_q_lat * lat_err ** 2
+        #         + self.weight.ter_q_lag * lag_err ** 2
+        #         + self.weight.ter_q_head * head_err ** 2
+        #         + self.weight.ter_q_v * speed_err ** 2
+        #         + self.weight.ter_q_vy * vy ** 2
+        #         + self.weight.ter_q_omega * omega ** 2)
+
+        terminal_cost = (self.weight.ter_q_pos * pos_err # ** 2
+                + self.weight.ter_q_head * head_err ** 2
+                + self.weight.ter_q_v * speed_err ** 2
+                + self.weight.ter_q_vy * vy ** 2
+                + self.weight.ter_q_omega * omega ** 2)
+
+        steer_seq = actions[:, :, 1]  # [K, T]
+        dsteer = (steer_seq[:, 1:] - steer_seq[:, :-1]) / self.dt  # [K, T-1], rate [rad/s]
+
+
+        throttle_seq = actions[:, :, 0]
+        dthrottle = (throttle_seq[:, 1:] - throttle_seq[:, :-1]) / self.dt
+
+        rate_cost = self.weight.q_du_steering * torch.sum(dsteer ** 2, dim=1) + self.weight.q_du_throttle * torch.sum(dthrottle ** 2, dim=1)  # [K]
+
+        control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0] ** 2,1) + self.weight.q_u_steering * torch.sum(actions[:,:,1] ** 2,1) + rate_cost
+
+        half_w = self.lane_width * 0.5
+        excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
+        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 300)
+
+        terminal_cost += control_cost + c_lane_T
+
+        if self.use_obstacle:
+            c_opponent_T = self.obstacle_cost(x, y)
+
+            terminal_cost += c_opponent_T
+
+        if self.use_dyn_obstacle:
+            c_T = self.obs_c_seq[-1]
+            c_opponent_T = self.obstacle_cost(x, y, c=c_T)
+            terminal_cost += c_opponent_T
+
+
+        if self.use_rollout_reference:
+
+            # Freeze trajecotry close to vehicle
+
+            M = self.weight.M
+
+            x_ref, y_ref, w1, J1 = self._compute_reference_from_rollouts(states)
+
+            dx = x_ref[1:] - x_ref[:-1]
+            dy = y_ref[1:] - y_ref[:-1]
+            yaw_ref = torch.zeros_like(x_ref)
+            yaw_ref[:-1] = torch.atan2(dy, dx)
+            yaw_ref[-1] = yaw_ref[-2]
+
+            if self.X0_gen_plan is not None and self.rollout_ref_valid:
+                X0_rollout_new = self.X0_gen_plan.clone()
+                X0_rollout_new[M:, 0] = x_ref[M:]
+                X0_rollout_new[M:, 1] = y_ref[M:]
+                X0_rollout_new[M:, 2] = yaw_ref[M:]
+                X0_rollout_new[M:, 3] = float(self.V_target)
+
+
+                a = float(self.rollout_ref_alpha)
+                X0_rollout_new[M:, 0] = a * self.X0_gen_plan[M:, 0] + (1 - a) * X0_rollout_new[M:, 0]
+                X0_rollout_new[M:, 1] = a * self.X0_gen_plan[M:, 1] + (1 - a) * X0_rollout_new[M:, 1]
+
+                # recompute yaw after filtering positions
+                dx = X0_rollout_new[1:, 0] - X0_rollout_new[:-1, 0]
+                dy = X0_rollout_new[1:, 1] - X0_rollout_new[:-1, 1]
+                yaw_ref = torch.zeros((self.N,), device=states.device)
+                yaw_ref[:-1] = torch.atan2(dy, dx)
+                yaw_ref[-1] = yaw_ref[-2]
+                X0_rollout_new[:, 2] = yaw_ref
+
+                self.X0_gen_plan = X0_rollout_new.detach()[1:,:]
+                # self.X0_gen_plan = X0_rollout_new.detach()
+            else:
+
+                self.X0_gen_plan = self.X0_track
+
+
+            self.ref_yaw_cos_gen_plan = torch.cos(self.X0_gen_plan[:, 2])
+            self.ref_yaw_sin_gen_plan = torch.sin(self.X0_gen_plan[:, 2])
+
+        return terminal_cost
+
+    def _publish_top_rollouts_rviz(self, states_top: torch.Tensor, ns="top_rollouts_cost1", base_id=9100):
+        """
+        states_top: [M, T, 6]
+        """
+        ma = MarkerArray()
+        M, T, _ = states_top.shape
+
+        for j in range(M):
+            m = Marker()
+            m.header.frame_id = "map"
+            m.header.stamp = rospy.Time.now()
+            m.ns = ns
+            m.id = base_id + j
+            m.type = Marker.LINE_STRIP
+            m.action = Marker.ADD
+            m.pose.orientation.w = 1.0
+            m.scale.x = 0.015
+            m.color.r = 0.0
+            m.color.g = 0.7
+            m.color.b = 1.0
+            m.color.a = 0.5
+            m.lifetime = rospy.Duration(0.0)
+
+            x = states_top[j, :, 0].detach().cpu().numpy()
+            y = states_top[j, :, 1].detach().cpu().numpy()
+            for xi, yi in zip(x, y):
+                p = Point()
+                p.x = float(xi)
+                p.y = float(yi)
+                p.z = 0.03
+                m.points.append(p)
+
+            ma.markers.append(m)
+
+        self.rviz_ref_pub.publish(ma)
+
+    def _compute_reference_from_rollouts(self, states: torch.Tensor) -> tuple:
+        """
+        Build a reference trajectory from rollouts using a separate Cost 1.
+        states: [K, T, 6] with [x,y,yaw,vx,vy,omega]
+        returns: (x_ref_hat[T], y_ref_hat[T], w1[K], J1[K])
+        """
+        K, T, _ = states.shape
+
+        x = states[:, :, 0]
+        y = states[:, :, 1]
+        yaw = states[:, :, 2]
+        vx = states[:, :, 3]
+        vy = states[:, :, 4]
+        omega = states[:, :, 5]
+
+
+        M = self.weight.M
+
+        if self.X0_gen_plan is not None:
+            x[:,:M] = self.X0_gen_plan.clone()[:M,0]
+            y[:,:M] = self.X0_gen_plan.clone()[:M, 1]
+            yaw[:,:M] = self.X0_gen_plan.clone()[:M, 2]
+
+        # speed
+        speed = torch.sqrt(vx ** 2 + vy ** 2)  # [K,T]
+        v_err = speed - self.V_target
+
+        # sideslip proxy: velocity direction vs heading
+        v_dir = torch.atan2(vy, vx)  # [K,T]
+        beta = self.wrap_angle(v_dir - yaw)  # [K,T]
+
+        if self.X0_gen_plan is not None:
+            ref_x = self.X0_gen_plan[:, 0].unsqueeze(0)  # [1,T]
+            ref_y = self.X0_gen_plan[:, 1].unsqueeze(0)  # [1,T]
+            cy = self.ref_yaw_cos.unsqueeze(0)  # [1,T]
+            sy = self.ref_yaw_sin.unsqueeze(0)  # [1,T]
+
+        else:
+            ref_x = self.X0_track[:, 0].unsqueeze(0)  # [1,T]
+            ref_y = self.X0_track[:, 1].unsqueeze(0)  # [1,T]
+            cy = self.ref_yaw_cos_track.unsqueeze(0)  # [1,T]
+            sy = self.ref_yaw_sin_track.unsqueeze(0)  # [1,T]
+
+        dx = x - ref_x
+        dy = y - ref_y
+        lat_err = -dx * sy + dy * cy  # [K,T]
+        lag_err = dx * cy + dy * sy  # [K,T]
+
+        half_w = 0.5 * self.lane_width
+        excess = torch.abs(lat_err) - (half_w - self.lane_margin)  # [K,T]
+        c_lane = torch.clamp(self.weight.q_ref_lane * self._softplus_hinge(excess), 0, 300)  # [K,T]
+
+        stage_cost1 = (
+                self.weight.q_ref_lag * (lag_err ** 2) +
+                self.weight.q_ref_lat * (lat_err ** 2) +
+                self.weight.q_ref_v * (v_err ** 2)
+                + c_lane
+                + self.weight.q_ref_omega * (omega ** 2)
+                + self.weight.q_ref_beta * (beta ** 2)
+        )  # [K,T]
+
+        if self.use_dyn_obstacle:
+            # obstacle sequence is [T,2] and yaw is [T]
+            stage_cost1 += self.obstacle_cost_batched(
+                x, y, c=self.obs_c_seq, yaw=self.obs_yaw_seq
+            )
+        elif self.use_obstacle:
+
+            stage_cost1 += self.obstacle_cost_batched(x, y)  # static c/Q
+
+
+        J1 = torch.sum(stage_cost1, dim=1)  # [K]
+
+        # weights for reference (softmax of -J/lambda)
+        lam = float(self.weight.lambda_ref)
+        J1_shift = J1 - torch.min(J1)
+        w1 = torch.softmax(-J1_shift / max(lam, 1e-6), dim=0)  # [K]
+
+        # build reference as weighted mean of positions
+        x_ref_hat = torch.sum(w1.view(K, 1) * x, dim=0)  # [T]
+        y_ref_hat = torch.sum(w1.view(K, 1) * y, dim=0)  # [T]
+
+        return x_ref_hat, y_ref_hat, w1, J1
+
+    def reachable_prefix_by_vmax(self, x: torch.Tensor, y: torch.Tensor, v_target: float, dt: float, N: int):
+        """
+        Return points along the input polyline that are reachable within N steps
+        assuming max progress per step is ds = v_target*dt.
+
+        Output length: N+1 points at arc-lengths 0, ds, 2ds, ..., N*ds,
+        clamped to the available polyline length.
+        """
+        ds = float(v_target) * float(dt)
+
+        # cumulative arc-length of input polyline
+        dx = x[1:] - x[:-1]
+        dy = y[1:] - y[:-1]
+        seg = torch.sqrt(dx * dx + dy * dy) + 1e-6
+
+        s = torch.zeros((x.shape[0],), device=x.device, dtype=x.dtype)
+        s[1:] = torch.cumsum(seg, dim=0)
+
+        L = s[-1]  # total polyline length
+        S_max = N * ds
+
+        # target distances along the polyline (reachable progress)
+        s_grid = torch.arange(N, device=x.device, dtype=x.dtype) * ds
+        s_grid = torch.clamp(s_grid, 0.0, min(L, S_max))
+
+        # interpolate on the polyline
+        idx = torch.searchsorted(s, s_grid)
+        idx = torch.clamp(idx, 1, x.shape[0] - 1)
+
+        s0 = s[idx - 1]
+        s1 = s[idx]
+        w = (s_grid - s0) / (s1 - s0 + 1e-6)
+
+        x_out = x[idx - 1] + w * (x[idx] - x[idx - 1])
+        y_out = y[idx - 1] + w * (y[idx] - y[idx - 1])
+
+        reachable_all = (L <= S_max + 1e-6)
+
+        if reachable_all:
+            x_out = x
+            y_out = y
+
+
+        return x_out, y_out
+
+    def get_current_goal(self):
+        if self.counter == 0:
+            cs = self.current_state[0].detach().to('cpu')  # [x, y, yaw, vx, vy]
+            xy = cs[:2].numpy()
+            x_vals_global_path = self.x_vals_global_path
+            y_vals_global_path = self.y_vals_global_path
+            s_vals_global_path = self.s_vals_global_path
+
+            estimated_ds = self.current_state[0, 3] * self.dt
+
+            prev_idx = self.previous_path_index
+            # ------ HIGH LEVEL SOLVER ------
+
+            self.s, self.current_path_index = find_s_of_closest_point_on_global_path(
+                xy,
+                s_vals_global_path, x_vals_global_path,
+                y_vals_global_path, self.previous_path_index, estimated_ds)
+
+            self.previous_path_index = self.current_path_index
+
+            # Check which lap the DART simualator is on
+            if (self.current_path_index < prev_idx and
+                    prev_idx >= self.wrap_high and
+                    self.current_path_index <= self.wrap_low):
+
+                lap_time = time.time() - self.lap_start_time
+                if self.lap_count > 0:
+                    self.lap_time_pub.publish(lap_time)
+                    rospy.loginfo(f"[logger_node] Lap time: {lap_time}")
+
+                self.lap_start_time = time.time()
+
+
+                self.lap_count += 1
+                self.lap_pub.publish(Int32(self.lap_count))
+                rospy.loginfo(
+                    f"[mppi_ros] Lap {self.lap_count} detected (index {prev_idx} → {self.current_path_index}).")
+
+            if self.use_rollout_reference:
+                # Obtain new reference track for this timestep of MPPI
+                self.X0_track = torch.tensor(self.produce_X0_global(
+                    V_target=self.V_target * 1.5,
+                    N=self.N,
+                    s_start=self.s
+                ), dtype= torch.float32, device = self.device)
+
+                Ds_forward = self.V_target * 1.5 * self.time_horizon
+                Ds_back = 0.0
+
+                self.ref_yaw_cos_track = torch.cos(self.X0_track[:, 2])
+                self.ref_yaw_sin_track = torch.sin(self.X0_track[:, 2])
+
+            else:
+
+                # Obtain new reference track for this timestep of MPPI
+                self.X0_con_plan = torch.tensor(self.produce_X0_global(
+                    V_target=self.V_target,
+                    N=self.N,
+                    s_start=self.s
+                ), dtype=torch.float32, device=self.device)
+
+                Ds_forward = self.V_target * self.time_horizon
+                Ds_back = 0.0
+
+                self.ref_yaw_cos = torch.cos(self.X0_con_plan[:, 2])
+                self.ref_yaw_sin = torch.sin(self.X0_con_plan[:, 2])
+
+
+            if self.use_dyn_obstacle:
+                self.build_obstacle_seq()
+
+            mask = (self.s_4_local_path >= self.s - Ds_back) & \
+                   (self.s_4_local_path <= self.s + Ds_forward)
+            idxs = np.nonzero(mask)[0]
+
+            local_x = self.x_4_local_path[idxs]
+            local_y = self.y_4_local_path[idxs]
+
+            rgba = [0.0, 1.0, 0.0, 0.8]  # bright green
+            marker_type = 4  # sphere list or LINE_STRIP
+            marray = produce_marker_array_rviz(local_x, local_y, rgba, marker_type)
+            self.rviz_local_path_pub.publish(marray)
+
+            dx = np.gradient(local_x)
+            dy = np.gradient(local_y)
+            heading = np.arctan2(dy, dx)
+
+            half_w = self.lane_width * 0.5
+            # left/right offset vectors (normal to path)
+            nx = -np.sin(heading)
+            ny = np.cos(heading)
+
+            x_left = local_x + half_w * nx
+            y_left = local_y + half_w * ny
+            x_right = local_x - half_w * nx
+            y_right = local_y - half_w * ny
+
+            rgba = [57.0, 81.0, 100.0, 1.0]
+            marker_type = 4
+            left_msg = produce_marker_array_rviz(x_left, y_left, rgba, marker_type)
+            right_msg = produce_marker_array_rviz(x_right, y_right, rgba, marker_type)
+            self.left_lane_pub.publish(left_msg)
+            self.right_lane_pub.publish(right_msg)
+
+        # objective = self.X_track[self.counter, :]  # "cpu") # Faster on cpu
+
+        if self.use_rollout_reference:
+
+            self.ref_yaw_cos = torch.cos(self.X0_track[:, 2])
+            self.ref_yaw_sin = torch.sin(self.X0_track[:, 2])
+
+            if self.X0_gen_plan is not None:
+                if self.counter == 0:
+
+
+
+                    if self.X0_gen_plan.shape[0] == self.N-1:
+                        self.X0_gen_plan = torch.cat(
+                            [self.X0_gen_plan, self.X0_track[-1, :].unsqueeze(0)],
+                            dim=0
+                        )
+
+                    ds = float(self.V_target) * float(self.dt)  # desired spacing per step)
+
+
+
+                    x_ref_hat, y_ref_hat = self.reachable_prefix_by_vmax(self.X0_gen_plan[:, 0], self.X0_gen_plan[:, 1],
+                                                                         self.V_target, self.dt, self.N)
+
+                    dx = x_ref_hat[1:] - x_ref_hat[:-1]
+                    dy = y_ref_hat[1:] - y_ref_hat[:-1]
+                    yaw_ref_hat = torch.zeros_like(x_ref_hat)
+                    yaw_ref_hat[:-1] = torch.atan2(dy, dx)
+                    yaw_ref_hat[-1] = yaw_ref_hat[-2]
+
+                    self.X0_con_plan = torch.zeros((self.N, 4), device=self.device, dtype=torch.float32)
+                    self.X0_con_plan[:, 0] = x_ref_hat
+                    self.X0_con_plan[:, 1] = y_ref_hat
+                    self.X0_con_plan[:, 2] = yaw_ref_hat
+                    self.X0_con_plan[:, 3] = float(self.V_target)
+
+                    self.ref_yaw_cos = torch.cos(self.X0_con_plan[:, 2])
+                    self.ref_yaw_sin = torch.sin(self.X0_con_plan[:, 2])
+
+                    self.rollout_ref_valid = True
+
+
+                    self._publish_gen_ref_path_rviz(self.X0_gen_plan[:, 0], self.X0_gen_plan[:, 1],
+                                                    ns="rollout_ref_lagged", mid=9002)
+                    self._publish_ref_path_rviz(self.X0_con_plan[:, 0], self.X0_con_plan[:, 1],
+                                                ns="rollout_ref_lagged", mid=9002)
+
+            else:
+                self.X0_con_plan = self.X0_track
+
+
+
+        objective = self.X0_con_plan[self.counter,:]
+
+
+
+        self.counter += 1
+        return objective
+
+    def produce_X0_global(self, V_target, N, s_start):
+        """
+        Build a global‐frame reference of length N starting at arc‐length s_start.
+        Returns an (N×4) array: [x, y, yaw, V_target].
+        """
+        # 1) decide the look‐ahead in meters
+        total_horizon = V_target* self.time_horizon
+        # create N+1 sample points from s_start → s_start + total_horizon
+        s_refs = np.linspace(s_start,
+                             s_start + total_horizon,
+                             N + 1)
+
+        # 2) wrap around if you exceed the end of your path
+        s_max = self.s_vals_global_path[-1]
+        s_refs = np.mod(s_refs, s_max)
+
+        # 3) interpolate global x,y
+        x_refs = np.interp(s_refs,
+                           self.s_vals_global_path,
+                           self.x_vals_global_path)
+        y_refs = np.interp(s_refs,
+                           self.s_vals_global_path,
+                           self.y_vals_global_path)
+
+        # 4) compute heading by finite‐difference
+        #    d/ds of (x,y) gives unit‐direction
+        dx_ds = np.gradient(x_refs, s_refs)
+        dy_ds = np.gradient(y_refs, s_refs)
+        yaw_refs = np.arctan2(dy_ds, dx_ds)
+
+        # 5) pack into X0 (skip the first point, that's "now")
+        X0 = np.zeros((N, 4))
+        X0[:, 0] = x_refs[1:]  # x
+        X0[:, 1] = y_refs[1:]  # y
+        X0[:, 2] = yaw_refs[1:]  # heading
+        X0[:, 3] = V_target  # constant speed
+
+        return X0
+
+    def _publish_gen_ref_path_rviz(self, x_ref: torch.Tensor, y_ref: torch.Tensor, ns="ref_from_rollouts", mid=9001):
+        """
+        Publish the reference as a LINE_STRIP.
+        x_ref, y_ref: [T] tensors
+        """
+        ma = MarkerArray()
+        m = Marker()
+        m.header.frame_id = "map"
+        m.header.stamp = rospy.Time.now()
+        m.ns = ns
+        m.id = mid
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.pose.orientation.w = 1.0
+
+        # line width
+        m.scale.x = 0.03
+
+        # color
+        m.color.r = 0.0
+        m.color.g = 1.0
+        m.color.b = 0.0
+        m.color.a = 0.95
+
+        m.lifetime = rospy.Duration(0.0)
+
+        # fill points
+        x_np = x_ref.detach().cpu().numpy()
+        y_np = y_ref.detach().cpu().numpy()
+        for xi, yi in zip(x_np, y_np):
+            p = Point()
+            p.x = float(xi)
+            p.y = float(yi)
+            p.z = 0.05
+            m.points.append(p)
+
+        ma.markers.append(m)
+        self.rviz_gen_ref_pub.publish(ma)
+
+    def _publish_ref_path_rviz(self, x_ref: torch.Tensor, y_ref: torch.Tensor, ns="ref_from_rollouts", mid=9001):
+        """
+        Publish the reference as a LINE_STRIP.
+        x_ref, y_ref: [T] tensors
+        """
+        ma = MarkerArray()
+        m = Marker()
+        m.header.frame_id = "map"
+        m.header.stamp = rospy.Time.now()
+        m.ns = ns
+        m.id = mid
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.pose.orientation.w = 1.0
+
+        # line width
+        m.scale.x = 0.03
+
+        # color
+        m.color.r = 1.0
+        m.color.g = 0.0
+        m.color.b = 0.0
+        m.color.a = 0.95
+
+        m.lifetime = rospy.Duration(0.0)
+
+        # fill points
+        x_np = x_ref.detach().cpu().numpy()
+        y_np = y_ref.detach().cpu().numpy()
+        for xi, yi in zip(x_np, y_np):
+            p = Point()
+            p.x = float(xi)
+            p.y = float(yi)
+            p.z = 0.05
+            m.points.append(p)
+
+        ma.markers.append(m)
+        self.rviz_ref_pub.publish(ma)
+
 
     def compute_expected_cost(self, state: torch.Tensor):
         x = [tensor[0,0].item() for tensor in state]
@@ -296,152 +953,6 @@ class ROSObjective:
 
         return expected_cost, self.weight, lat_err, lag_err, head_err, speed_err, torch.Tensor(vy), torch.Tensor(omega), pos_err
 
-    def terminal_costs(self, states: torch.Tensor, actions: torch.Tensor):
-
-        x, y, yaw, vx, vy, omega = states[:, -1, 0], states[:, -1, 1], states[:, -1, 2], states[:, -1, 3], states[:, -1, 4], states[:, -1, 5]
-        ref_x = self.X0[-1,0]
-        ref_y = self.X0[-1,1]
-        ref_yaw = self.X0[-1,2]
-        V_target = self.X0[-1,3]
-
-        dx = x - ref_x
-        dy = y - ref_y
-
-        # lag_err = dx * self.ref_yaw_cos[-1] + dy * self.ref_yaw_sin[-1]
-        lat_err = -dx * self.ref_yaw_sin[-1] + dy * self.ref_yaw_cos[-1]
-        head_err = self.wrap_angle(yaw - ref_yaw)
-        speed = torch.sqrt(vx ** 2 + vy ** 2)
-        speed_err = speed - V_target
-
-        pos_err = dx ** 2 + dy ** 2
-
-        # terminal_cost = (self.weight.ter_q_lat * lat_err ** 2
-        #         + self.weight.ter_q_lag * lag_err ** 2
-        #         + self.weight.ter_q_head * head_err ** 2
-        #         + self.weight.ter_q_v * speed_err ** 2
-        #         + self.weight.ter_q_vy * vy ** 2
-        #         + self.weight.ter_q_omega * omega ** 2)
-
-        terminal_cost = (self.weight.ter_q_pos * pos_err # ** 2
-                + self.weight.ter_q_head * head_err ** 2
-                + self.weight.ter_q_v * speed_err ** 2
-                + self.weight.ter_q_vy * vy ** 2
-                + self.weight.ter_q_omega * omega ** 2)
-
-        steer_seq = actions[:, :, 1]  # [K, T]
-        dsteer = (steer_seq[:, 1:] - steer_seq[:, :-1]) / self.dt  # [K, T-1], rate [rad/s]
-
-
-        throttle_seq = actions[:, :, 0]
-        dthrottle = (throttle_seq[:, 1:] - throttle_seq[:, :-1]) / self.dt
-
-        rate_cost = self.weight.q_du_steering * torch.sum(dsteer ** 2, dim=1) + self.weight.q_du_throttle * torch.sum(dthrottle ** 2, dim=1)  # [K]
-
-        control_cost = self.weight.q_u_throttle * torch.sum(actions[:,:,0] ** 2,1) + self.weight.q_u_steering * torch.sum(actions[:,:,1] ** 2,1) + rate_cost
-
-        half_w = self.lane_width * 0.5
-        excess_T = torch.abs(lat_err) - (half_w - self.lane_margin)
-        c_lane_T = torch.clamp((1.5 * self.weight.w_lane) * self._softplus_hinge(excess_T), 0, 300)
-
-        terminal_cost += control_cost + c_lane_T
-
-        if self.use_obstacle:
-            c_opponent_T = self.obstacle_cost(x, y)
-
-            terminal_cost += c_opponent_T
-
-        if self.use_dyn_obstacle:
-            c_T = self.obs_c_seq[-1]
-            c_opponent_T = self.obstacle_cost(x, y, c=c_T)
-            terminal_cost += c_opponent_T
-
-        return terminal_cost
-
-    def compute_running_cost(self, state: torch.Tensor):
-        """
-        state: Tensor[K,5] = [x, y, yaw, vx, vy]
-        self.nav_goal: Tensor[4] = [ref_x, ref_y, ref_yaw, V_target]
-        """
-        # unpack
-        x, y, yaw, vx, vy, omega = state[:, 0], state[:, 1], state[:, 2], state[:, 3], state[:, 4], state[:, 5]
-        ref_x, ref_y, ref_yaw, V_target = self.get_current_goal()  # each a scalar tensor
-
-        # errors
-        dx = x - ref_x
-        dy = y - ref_y
-
-        lag_err = dx * self.ref_yaw_cos[self.counter-1] + dy * self.ref_yaw_sin[self.counter-1]
-        lat_err = -dx * self.ref_yaw_sin[self.counter-1] + dy * self.ref_yaw_cos[self.counter-1]
-        head_err = self.wrap_angle(yaw - ref_yaw)
-        speed = torch.sqrt(vx ** 2 + vy ** 2)
-        speed_err = speed - V_target
-        pos_err = dx ** 2 + dy ** 2
-
-        # # reference heading at this step
-        # cy = self.ref_yaw_cos[self.counter - 1]
-        # sy = self.ref_yaw_sin[self.counter - 1]
-        #
-        # # project world-frame velocity onto the path tangent
-        # v_along = vx * cy + vy * sy
-        # speed_err = v_along - V_target
-
-        # print(f"x: {x}")
-        # print(f"po error: {lat_err}")
-        # print(f"vx: {vx}")
-        # print(f"velocity along lateral: {v_along}")
-        # print(f"speed error: {speed_err}")
-
-
-        cost = (self.weight.q_lat * lat_err ** 2
-                + self.weight.q_lag * lag_err ** 2
-                + self.weight.q_head * head_err ** 2
-                + self.weight.q_v * speed_err ** 2
-                + self.weight.q_vy * vy ** 2
-                + self.weight.q_omega * omega ** 2)
-
-        # cost = (self.weight.q_pos * pos_err #** 2
-        #         + self.weight.q_head * head_err ** 2
-        #         + self.weight.q_v * speed_err ** 2
-        #         + self.weight.q_vy * vy ** 2
-        #         + self.weight.q_omega * omega ** 2)
-
-        # # reverse penalty (only when moving opposite to path tangent)
-        # rev = torch.clamp(-v_along, min=0.0)  # = max(0, -v_along)
-        # cost += 100000.0 * (rev ** 2)  # or rev (L1) if you prefer
-
-        half_w = self.lane_width * 0.5
-        excess = torch.abs(lat_err) - (half_w - self.lane_margin)
-
-        c_lane = torch.clamp(self.weight.w_lane * self._softplus_hinge(excess), 0, 300)
-        cost = cost + c_lane
-
-        # throttle = state[:,6]
-        # steering = state[:,7]
-        #
-        # control_cost = self.weight.q_u_throttle * throttle ** 2 + self.weight.q_u_steering * steering ** 2
-        #
-        # cost = cost + control_cost
-
-        if self.use_obstacle:
-            c_opponent = self.obstacle_cost(x, y)
-
-            cost += c_opponent
-
-        # if self.use_obstacle:
-        #     idx = max(self.counter - 1, 0)
-        #     c_t = self.obs_c_seq[idx]  # shape [2]
-        #     c_opponent = self._obstacle_cost(x, y, c=c_t)
-        #     cost += c_opponent
-
-        if self.use_dyn_obstacle:
-            idx = max(self.counter - 1, 0)
-            c_t = self.obs_c_seq[idx]  # [2]
-            yaw_t = self.obs_yaw_seq[idx]  # scalar tensor
-            c_opponent = self.dyn_obstacle_cost(x, y, c=c_t, yaw=yaw_t)
-            cost += c_opponent
-
-        return cost
-
     def dyn_obstacle_cost(self, xk, yk, c=None, yaw=None):
         """
         xk, yk: shape [K], positions of all rollouts at current time step.
@@ -505,6 +1016,40 @@ class ROSObjective:
 
         return torch.clamp(c_obs, 0.0, 1e6)
 
+    def obstacle_cost_batched(self, x, y, c=None, Q=None, yaw=None):
+        """
+        x,y: [K] or [K,T]
+        c:
+          - static: [2]
+          - time-varying: [T,2] (broadcasted across K)
+        yaw:
+          - optional time-varying yaw [T] for oriented ellipse (preferred),
+            or scalar for static orientation.
+        returns:
+          - [K] if x is [K]
+          - [K,T] if x is [K,T]
+        """
+        if c is None:
+            c = self.obstacle_c
+        if Q is None:
+            Q = self.obstacle_Q
+
+        # Build p = [...,2]
+        p = torch.stack([x, y], dim=-1)
+
+        # Broadcast centre to p shape
+        if c.ndim == 1:  # [2]
+            c_ = c
+        else:  # [T,2] -> [1,T,2] to broadcast over K
+            c_ = c.unsqueeze(0)
+
+        d = p - c_  # [...,2]
+
+        phi = torch.sum((d @ Q) * d, dim=-1) - 1.0
+        arg = (-phi) + self.obstacle_margin
+        c_obs = self.weight.w_opponent * self._softplus_hinge(arg) #* 100
+        return torch.clamp(c_obs, 0.0, 1e6)
+
     def build_obstacle_seq(self):
         # horizon duration
         total_horizon = self.time_horizon  # = N * dt
@@ -566,139 +1111,6 @@ class ROSObjective:
         m.lifetime = rospy.Duration(0)  # persistent
         ma.markers.append(m)
         self.obs_pub.publish(ma)
-
-    def get_current_goal(self):
-        if self.counter == 0:
-            cs = self.current_state[0].detach().to('cpu')  # [x, y, yaw, vx, vy]
-            xy = cs[:2].numpy()
-            x_vals_global_path = self.x_vals_global_path
-            y_vals_global_path = self.y_vals_global_path
-            s_vals_global_path = self.s_vals_global_path
-
-            estimated_ds = self.current_state[0, 3] * self.dt
-
-            prev_idx = self.previous_path_index
-            # ------ HIGH LEVEL SOLVER ------
-
-            self.s, self.current_path_index = find_s_of_closest_point_on_global_path(
-                xy,
-                s_vals_global_path, x_vals_global_path,
-                y_vals_global_path, self.previous_path_index, estimated_ds)
-
-            self.previous_path_index = self.current_path_index
-
-            # Check which lap the DART simualator is on
-            if (self.current_path_index < prev_idx and
-                    prev_idx >= self.wrap_high and
-                    self.current_path_index <= self.wrap_low):
-
-                lap_time = time.time() - self.lap_start_time
-                if self.lap_count > 0:
-                    self.lap_time_pub.publish(lap_time)
-                    rospy.loginfo(f"[logger_node] Lap time: {lap_time}")
-
-                self.lap_start_time = time.time()
-
-
-                self.lap_count += 1
-                self.lap_pub.publish(Int32(self.lap_count))
-                rospy.loginfo(
-                    f"[mppi_ros] Lap {self.lap_count} detected (index {prev_idx} → {self.current_path_index}).")
-
-
-            # Obtain new reference track for this timestep of MPPI
-            self.X0 = torch.tensor(self.produce_X0_global(
-                V_target=self.V_target,
-                N=self.N,
-                s_start=self.s
-            ), dtype= torch.float32, device = self.device)
-
-            if self.use_dyn_obstacle:
-                self.build_obstacle_seq()
-
-            Ds_forward = self.V_target * self.time_horizon
-            Ds_back = 0.0
-
-            mask = (self.s_4_local_path >= self.s - Ds_back) & \
-                   (self.s_4_local_path <= self.s + Ds_forward)
-            idxs = np.nonzero(mask)[0]
-
-            local_x = self.x_4_local_path[idxs]
-            local_y = self.y_4_local_path[idxs]
-
-            rgba = [0.0, 1.0, 0.0, 0.8]  # bright green
-            marker_type = 4  # sphere list or LINE_STRIP
-            marray = produce_marker_array_rviz(local_x, local_y, rgba, marker_type)
-            self.rviz_local_path_pub.publish(marray)
-
-
-            self.ref_yaw_cos = torch.cos(self.X0[:, 2])
-            self.ref_yaw_sin = torch.sin(self.X0[:, 2])
-
-            dx = np.gradient(local_x)
-            dy = np.gradient(local_y)
-            heading = np.arctan2(dy, dx)
-
-            half_w = self.lane_width * 0.5
-            # left/right offset vectors (normal to path)
-            nx = -np.sin(heading)
-            ny = np.cos(heading)
-
-            x_left = local_x + half_w * nx
-            y_left = local_y + half_w * ny
-            x_right = local_x - half_w * nx
-            y_right = local_y - half_w * ny
-
-            rgba = [57.0, 81.0, 100.0, 1.0]
-            marker_type = 4
-            left_msg = produce_marker_array_rviz(x_left, y_left, rgba, marker_type)
-            right_msg = produce_marker_array_rviz(x_right, y_right, rgba, marker_type)
-            self.left_lane_pub.publish(left_msg)
-            self.right_lane_pub.publish(right_msg)
-
-        objective = self.X0[self.counter, :] # "cpu") # Faster on cpu
-        self.counter += 1
-        return objective
-
-    def produce_X0_global(self, V_target, N, s_start):
-        """
-        Build a global‐frame reference of length N starting at arc‐length s_start.
-        Returns an (N×4) array: [x, y, yaw, V_target].
-        """
-        # 1) decide the look‐ahead in meters
-        total_horizon = self.V_target * self.time_horizon
-        # create N+1 sample points from s_start → s_start + total_horizon
-        s_refs = np.linspace(s_start,
-                             s_start + total_horizon,
-                             N + 1)
-
-        # 2) wrap around if you exceed the end of your path
-        s_max = self.s_vals_global_path[-1]
-        s_refs = np.mod(s_refs, s_max)
-
-        # 3) interpolate global x,y
-        x_refs = np.interp(s_refs,
-                           self.s_vals_global_path,
-                           self.x_vals_global_path)
-        y_refs = np.interp(s_refs,
-                           self.s_vals_global_path,
-                           self.y_vals_global_path)
-
-        # 4) compute heading by finite‐difference
-        #    d/ds of (x,y) gives unit‐direction
-        dx_ds = np.gradient(x_refs, s_refs)
-        dy_ds = np.gradient(y_refs, s_refs)
-        yaw_refs = np.arctan2(dy_ds, dx_ds)
-
-        # 5) pack into X0 (skip the first point, that's "now")
-        X0 = np.zeros((N, 4))
-        X0[:, 0] = x_refs[1:]  # x
-        X0[:, 1] = y_refs[1:]  # y
-        X0[:, 2] = yaw_refs[1:]  # heading
-        X0[:, 3] = V_target  # constant speed
-
-        return X0
-
 
 
 def reset_sim(x, y, theta, model_choice, *,
@@ -1112,8 +1524,13 @@ def reset_run():
     elif CONFIG["env"] == "sim":
         reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=1)
 
+    if CONFIG["mode"] == "FM_mppi":
+        ref_gen = True
+    else:
+        ref_gen = False
+
     obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"],
-                       CONFIG["use_obstacle"], CONFIG["troubleshoot"], device=CONFIG["device"])
+                       CONFIG["use_obstacle"], CONFIG["troubleshoot"], ref_gen, device=CONFIG["device"])
 
     # 4) hard reset MPPI internal memory by recreating the planner (simplest + robust)
     planner = MPPIPlanner(
@@ -1276,9 +1693,14 @@ if __name__ == "__main__":
     sim.dynamics = dynamics
     sim.vel_mode = CONFIG["vel_mode"]
 
+    if CONFIG["mode"] == "FM_mppi":
+        ref_gen = True
+    else:
+        ref_gen = False
+
     run_counter = 0
     # 3) Objective
-    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG["use_obstacle"], CONFIG["troubleshoot"], device=CONFIG["device"])
+    obj = ROSObjective(track_choice, CONFIG["mppi"]["horizon"], CONFIG["dt"], CONFIG["v_target"], CONFIG["use_obstacle"], CONFIG["troubleshoot"], ref_gen, device=CONFIG["device"])
 
     global_path_message = sim.generate_track(obj.x_vals_global_path, obj.y_vals_global_path, obj.s_vals_global_path)
 
@@ -1293,9 +1715,9 @@ if __name__ == "__main__":
     planner.terminal_state_cost = obj.terminal_costs
     step_idx = 0
 
-    rate = rospy.Rate(1/CONFIG["dt"])
+    # rate = rospy.Rate(1/CONFIG["dt"])
 
-    # rate = rospy.Rate(1/0.5)
+    rate = rospy.Rate(1/0.5)
 
     counter = 0
     global_path_message_rate = 5  # publish 1 every 5 control loops
@@ -1335,11 +1757,11 @@ if __name__ == "__main__":
         # making sure that while waiting the actions are zero
         # sim.send_control(torch.tensor([0.0, 0.0]))
         # if CONFIG["troubleshoot"] == 1:
-        #    if first == 0:
-        #        input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
-        #    else:
-        #        first = 0
-        #    rospy.loginfo("Starting next MPPI iteration...")
+        # if first == 0:
+        #    input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
+        # else:
+        #    first = 0
+        # rospy.loginfo("Starting next MPPI iteration...")
 
         state = sim.get_current_state(dynamics._device)
 
@@ -1601,9 +2023,10 @@ if __name__ == "__main__":
         #
 
         if obj.lap_count > CONFIG["laps"]:
-           reset_run()
-           continue
 
+            reset_run()
+            continue
+                
         rate.sleep()
 
 

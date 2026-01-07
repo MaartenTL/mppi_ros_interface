@@ -133,8 +133,8 @@ class SimulatorROS:
 
         # Example: one obstacle placed at a path position (s0) with lateral offset d0 (m)
         # You can also set absolute (cx, cy) below if you prefer.
-        self.obst_s0 = 8.0  # metres along global path
-        self.obst_d0 = -0.5  # lateral offset from centreline (+left, -right)
+        self.obst_s0 = 0.0  # metres along global path
+        self.obst_d0 = -0.2  # lateral offset from centreline (+left, -right)
         self.obst_a, self.obst_b = 0.5, 0.25  # ellipse semi-axes (m): x'-axis=a, y'-axis=b
         self.obst_yaw = 0.0  # orientation of ellipse in world (rad)
 

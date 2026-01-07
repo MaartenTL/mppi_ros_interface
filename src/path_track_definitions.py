@@ -589,7 +589,174 @@ def raw_track(choice):
         ),
             axis=0)
 
+    elif choice == 'racetrack_vicon_short':
 
+        # l_large = 8.7
+        l_large = 7
+        l_small = 4.0
+
+        l_start = l_large / 2  # initial point (necessary for pure pursuit smoothing)
+
+        R1 = 0.5
+        R2 = 1.0
+
+        theta_init1 = np.pi * (-0.5)
+        theta_end1 = theta_init1 + np.pi * (0.5)
+        theta_vec1 = np.linspace(theta_init1, theta_end1, n_checkpoints)
+
+        theta_init2 = theta_end1
+        theta_end2 = theta_init2 + np.pi * (1.0)
+        theta_vec2 = np.linspace(theta_init2, theta_end2, n_checkpoints)
+
+        theta_init3 = 0. * np.pi
+        theta_end3 = - np.pi * (1.0)
+        theta_vec3 = np.linspace(theta_init3, theta_end3, n_checkpoints)
+
+        theta_init4 = 0
+        theta_end4 = np.pi
+        theta_vec4 = np.linspace(theta_init4, theta_end4, n_checkpoints)
+
+        theta_init5 = - 1 * np.pi
+        theta_end5 = - 0.5 * np.pi
+        theta_vec5 = np.linspace(theta_init5, theta_end5, n_checkpoints)
+
+        # adding R location in 3D to resolve ambiguity
+        theta_R1_init = 0
+        theta_R1_end = np.pi
+        theta_R1_vec = np.linspace(theta_R1_init, theta_R1_end, n_checkpoints)
+
+        # 1
+        Checkpoints_x1 = np.linspace(l_start, l_large - R2, n_checkpoints)
+        Checkpoints_y1 = np.linspace(0, 0, n_checkpoints)
+        Checkpoints_k1 = 0 * np.ones(n_checkpoints)
+
+        # 2
+        Checkpoints_x2 = Checkpoints_x1[-1] + R2 * np.cos(theta_vec1)
+        Checkpoints_y2 = R2 + R2 * np.sin(theta_vec1)
+        Checkpoints_k2 = + 1 / R2 * np.ones(n_checkpoints)
+
+        # 3
+        Checkpoints_x3 = np.linspace(l_large, l_large, n_checkpoints)
+        Checkpoints_y3 = np.linspace(R2, l_small - R1, n_checkpoints)
+        Checkpoints_k3 = 0 * np.ones(n_checkpoints)
+
+        # 4
+        Checkpoints_x4 = l_large - R1 + R1 * np.cos(theta_vec2)
+        Checkpoints_y4 = l_small - R1 + R1 * np.sin(theta_vec2)
+        Checkpoints_k4 = + 1 / R1 * np.ones(n_checkpoints)
+
+        # 5
+        Checkpoints_x5 = np.linspace(Checkpoints_x4[-1], Checkpoints_x4[-1], n_checkpoints)
+        Checkpoints_y5 = np.linspace(Checkpoints_y4[-1], R1 + R2, n_checkpoints)
+        Checkpoints_k5 = 0 * np.ones(n_checkpoints)
+
+        # 6
+        Checkpoints_x6 = l_large - 2 * R1 - R2 + R2 * np.cos(theta_vec3)
+        Checkpoints_y6 = R1 + R2 + R2 * np.sin(theta_vec3)
+        Checkpoints_k6 = - 1 / R2 * np.ones(n_checkpoints)
+
+        # 7
+        Checkpoints_x7 = np.linspace(Checkpoints_x6[-1], Checkpoints_x6[-1], n_checkpoints)
+        Checkpoints_y7 = np.linspace(Checkpoints_y6[-1], l_small - R2, n_checkpoints)
+        Checkpoints_k7 = 0 * np.ones(n_checkpoints)
+
+        # 8
+        Checkpoints_x8 = 4 * R1 + R2 + R2 * np.cos(theta_vec4)
+        Checkpoints_y8 = l_small - R2 + R2 * np.sin(theta_vec4)
+        Checkpoints_k8 = + 1 / R2 * np.ones(n_checkpoints)
+
+        # 9
+        Checkpoints_x9 = np.linspace(Checkpoints_x8[-1], Checkpoints_x8[-1], n_checkpoints)
+        Checkpoints_y9 = np.linspace(Checkpoints_y8[-1], 0.5 + R1, n_checkpoints)
+        Checkpoints_k9 = 0 * np.ones(n_checkpoints)
+
+        # 10
+        Checkpoints_x10 = R1 + R2 + R1 * np.cos(theta_vec3)
+        Checkpoints_y10 = 0.5 + R1 + R1 * np.sin(theta_vec3)
+        Checkpoints_k10 = - 1 / R1 * np.ones(n_checkpoints)
+
+        # 11
+        Checkpoints_x11 = np.linspace(Checkpoints_x10[-1], Checkpoints_x10[-1], n_checkpoints)
+        Checkpoints_y11 = np.linspace(Checkpoints_y10[-1], l_small - R1, n_checkpoints)
+        Checkpoints_k11 = 0 * np.ones(n_checkpoints)
+
+        # 12
+        Checkpoints_x12 = R1 + R1 * np.cos(theta_vec2)
+        Checkpoints_y12 = l_small - R1 + R1 * np.sin(theta_vec2)
+        Checkpoints_k12 = + 1 / R1 * np.ones(n_checkpoints)
+
+        # 13
+        Checkpoints_x13 = np.linspace(Checkpoints_x12[-1], Checkpoints_x12[-1], n_checkpoints)
+        Checkpoints_y13 = np.linspace(Checkpoints_y12[-1], R2, n_checkpoints)
+        Checkpoints_k13 = 0 * np.ones(n_checkpoints)
+
+        # 14
+        Checkpoints_x14 = R2 + R2 * np.cos(theta_vec5)
+        Checkpoints_y14 = R2 + R2 * np.sin(theta_vec5)
+        Checkpoints_k14 = + 1 / R2 * np.ones(n_checkpoints)
+
+        # 15
+        Checkpoints_x15 = np.linspace(R2, l_start, n_checkpoints)
+        Checkpoints_y15 = np.linspace(0, 0, n_checkpoints)
+        Checkpoints_k15 = 0 * np.ones(n_checkpoints)
+
+        # Concatenate all checkpoints
+        Checkpoints_x = np.concatenate((
+            Checkpoints_x1[0:n_checkpoints - 1],
+            Checkpoints_x2[0:n_checkpoints - 1],
+            Checkpoints_x3[0:n_checkpoints - 1],
+            Checkpoints_x4[0:n_checkpoints - 1],
+            Checkpoints_x5[0:n_checkpoints - 1],
+            Checkpoints_x6[0:n_checkpoints - 1],
+            Checkpoints_x7[0:n_checkpoints - 1],
+            Checkpoints_x8[0:n_checkpoints - 1],
+            Checkpoints_x9[0:n_checkpoints - 1],
+            Checkpoints_x10[0:n_checkpoints - 1],
+            Checkpoints_x11[0:n_checkpoints - 1],
+            Checkpoints_x12[0:n_checkpoints - 1],
+            Checkpoints_x13[0:n_checkpoints - 1],
+            Checkpoints_x14[0:n_checkpoints - 1],
+            Checkpoints_x15[0:n_checkpoints - 1],
+        ),
+            axis=0)
+
+        Checkpoints_y = np.concatenate((
+            Checkpoints_y1[0:n_checkpoints - 1],
+            Checkpoints_y2[0:n_checkpoints - 1],
+            Checkpoints_y3[0:n_checkpoints - 1],
+            Checkpoints_y4[0:n_checkpoints - 1],
+            Checkpoints_y5[0:n_checkpoints - 1],
+            Checkpoints_y6[0:n_checkpoints - 1],
+            Checkpoints_y7[0:n_checkpoints - 1],
+            Checkpoints_y8[0:n_checkpoints - 1],
+            Checkpoints_y9[0:n_checkpoints - 1],
+            Checkpoints_y10[0:n_checkpoints - 1],
+            Checkpoints_y11[0:n_checkpoints - 1],
+            Checkpoints_y12[0:n_checkpoints - 1],
+            Checkpoints_y13[0:n_checkpoints - 1],
+            Checkpoints_y14[0:n_checkpoints - 1],
+            Checkpoints_y15[0:n_checkpoints - 1],
+        ),
+            axis=0)
+
+        Checkpoints_k = np.concatenate((
+            Checkpoints_k1[0:n_checkpoints - 1],
+            Checkpoints_k2[0:n_checkpoints - 1],
+            Checkpoints_k3[0:n_checkpoints - 1],
+            Checkpoints_k4[0:n_checkpoints - 1],
+            Checkpoints_k5[0:n_checkpoints - 1],
+            Checkpoints_k6[0:n_checkpoints - 1],
+            Checkpoints_k7[0:n_checkpoints - 1],
+            Checkpoints_k8[0:n_checkpoints - 1],
+            Checkpoints_k9[0:n_checkpoints - 1],
+            Checkpoints_k10[0:n_checkpoints - 1],
+            Checkpoints_k11[0:n_checkpoints - 1],
+            Checkpoints_k12[0:n_checkpoints - 1],
+            Checkpoints_k13[0:n_checkpoints - 1],
+            Checkpoints_k14[0:n_checkpoints - 1],
+            Checkpoints_k15[0:n_checkpoints - 1],
+        ),
+            axis=0)
 
     elif choice == 'racetrack_vicon_2':
 
