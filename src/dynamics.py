@@ -35,12 +35,7 @@ class Kinematic_Bicycle:
         else:
             n_sub = 1
 
-        if dt_total > 0.9:
-            n_sub = 100
-
         dt_sub = dt_total / n_sub
-
-
 
         # unpack once; we will update these inside the loop
         x, y, yaw, vx, vy, w = states.unbind(dim=1)

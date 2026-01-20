@@ -760,6 +760,11 @@ def raw_track(choice):
 
     elif choice == 'racetrack_vicon_2':
 
+	
+        x_shift_vicon_lab = -0.5
+        y_shift_vicon_lab = -2.5
+
+
         # l_large = 8.7
         l_large = 4.5
         l_small = 4.5

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from typing import Optional
+
 import rospy
 import yaml
 import torch
@@ -37,6 +39,137 @@ mf = model_functions()
 abs_path = os.path.dirname(os.path.abspath(__file__))
 # noinspection PyUnresolvedReferences
 from visualization_msgs.msg import MarkerArray, Marker
+
+import numpy as np
+import os
+import time
+
+class RunRolloutLogger:
+    """
+    Collect MPPI rollout weights + related controls per control step, then flush once per run.
+    Writes a single compressed npz file per run for fast offline analysis.
+    """
+    def __init__(self, root_dir: str, car_number: int, max_steps: int = 5000, downsample_K: int = None):
+        self.root_dir = root_dir
+        self.car_number = car_number
+        self.max_steps = int(max_steps)
+        self.downsample_K = downsample_K  # e.g. 500 to limit file size, or None for full
+        os.makedirs(self.root_dir, exist_ok=True)
+        self.reset(run_id=0, meta=None)
+
+    def reset(self, run_id: int, meta: Optional[dict]):
+        self.run_id = int(run_id)
+        self.meta = meta or {}
+        self.t0 = time.time()
+
+        # Step-wise arrays stored as Python lists, then stacked at flush.
+        self.steps = []
+        self.u0 = []
+        self.u0_samples = []
+        self.weights = []
+        self.costs = []
+        self.cost_min = []
+        self.mean_u = []
+        self.best_u = []
+
+    def _maybe_downsample(self, u0_samples: np.ndarray, w: np.ndarray, costs: Optional[np.ndarray]):
+        if self.downsample_K is None:
+            return u0_samples, w, costs
+
+        K = u0_samples.shape[0]
+        if K <= self.downsample_K:
+            return u0_samples, w, costs
+
+        # Keep top-N by weight + random remainder (stable stats, smaller files)
+        N_top = min(100, self.downsample_K // 2)
+        top_idx = np.argsort(-w)[:N_top]
+
+        remaining = self.downsample_K - top_idx.size
+        all_idx = np.arange(K)
+        mask = np.ones(K, dtype=bool)
+        mask[top_idx] = False
+        rest_idx = all_idx[mask]
+        rand_idx = np.random.choice(rest_idx, size=remaining, replace=False) if remaining > 0 else np.array([], dtype=int)
+
+        sel = np.concatenate([top_idx, rand_idx])
+        return u0_samples[sel], w[sel], (costs[sel] if costs is not None else None)
+
+    def log_step(
+        self,
+        step_idx: int,
+        u0: np.ndarray,                 # shape (2,)
+        u0_samples: np.ndarray,         # shape (K,2)
+        weights: np.ndarray,            # shape (K,)
+        costs: Optional[np.ndarray],       # shape (K,) or None
+        cost_min: float,
+        mean_u: Optional[np.ndarray],      # shape (T,2) or None
+        best_u: Optional[np.ndarray]  # shape (T,2) or None
+    ):
+        if len(self.steps) >= self.max_steps:
+            return
+
+        # Ensure float32 to shrink files
+        u0 = np.asarray(u0, dtype=np.float32)
+        u0_samples = np.asarray(u0_samples, dtype=np.float32)
+        weights = np.asarray(weights, dtype=np.float32)
+        if costs is not None:
+            costs = np.asarray(costs, dtype=np.float32)
+
+        # Normalize weights defensively
+        s = float(weights.sum())
+        if s > 0:
+            weights = weights / s
+
+        u0_samples, weights, costs = self._maybe_downsample(u0_samples, weights, costs)
+
+        self.steps.append(int(step_idx))
+        self.u0.append(u0)
+        self.u0_samples.append(u0_samples)
+        self.weights.append(weights)
+        self.cost_min.append(float(cost_min))
+        self.costs.append(costs if costs is not None else np.array([], dtype=np.float32))
+
+        # Optional: store mean/best once per step (can be big; keep if you need it)
+        if mean_u is not None:
+            self.mean_u.append(np.asarray(mean_u, dtype=np.float32))
+        else:
+            self.mean_u.append(np.array([], dtype=np.float32))
+
+        if best_u is not None:
+            self.best_u.append(np.asarray(best_u, dtype=np.float32))
+        else:
+            self.best_u.append(np.array([], dtype=np.float32))
+
+
+
+    def flush(self):
+        if len(self.steps) == 0:
+            return None
+
+        run_dir = os.path.join(self.root_dir, f"car{self.car_number}")
+        os.makedirs(run_dir, exist_ok=True)
+
+        out_path = os.path.join(run_dir, f"run_{self.run_id:03d}.npz")
+
+        np.savez_compressed(
+            out_path,
+            meta=self.meta,
+            wall_time_s=float(time.time() - self.t0),
+            steps=np.array(self.steps, dtype=np.int32),
+            u0=np.stack(self.u0, axis=0),  # [S,2]
+
+            # Ragged arrays saved as object arrays (each step can have different K if you downsample)
+            u0_samples=np.array(self.u0_samples, dtype=object),
+            weights=np.array(self.weights, dtype=object),
+            costs=np.array(self.costs, dtype=object),
+
+            cost_min=np.array(self.cost_min, dtype=np.float32),
+            mean_u=np.array(self.mean_u, dtype=object),
+            best_u=np.array(self.best_u, dtype=object),
+        )
+        return out_path
+
+
 
 
 class StateDisturber:
@@ -104,48 +237,65 @@ class StateDisturber:
 
 class MPPIWeights:
     def __init__(self):
-        self.q_lat = 1.0 # 0.1 # 0.5 1.0
-        self.q_lag = 0.5 # 1.0 2.5
 
+        self.ter_q_v = 0.0 # self.q_v * 0.0 # 1.0
+        self.ter_q_vy = 0.0 # self.q_vy * 0.0
+        self.ter_q_omega = 0.0 # self.q_omega * 0.0 #0.5
+        self.ter_q_lat = 0.0 # self.q_lat * 0.0 # 10.0
+        self.ter_q_lag = 0.0 # self.q_lag * 0.0 # 2.0
 
-        self.q_head = 1.0 # 0.8 # 0.25 # 0.25
-        self.q_v = 0.1 # 1.0 # 0.0
-        self.q_vy = 0.0 # 0.2 # 0.2
+        self.q_vy = 0.0  # 0.0
+
+        self.q_lat = 0.0 # 0.5
+        self.q_lag = 0.0 # 2.0
+
+        self.q_head = 0.1 # 0.1
+        self.q_v = 0.1 # 0.1
         self.q_omega = 0.0 # 0.0
+        self.q_pos = 1.0 # 1.0
 
-        self.q_pos = 2.0
+        self.ter_q_head = 0.0 # self.q_head * 0.0 # 1.0
+        self.ter_q_pos = 0.0 # self.q_pos * 0.0
 
-        self.ter_q_lat = self.q_lat * 0.0 # 10.0
-        self.ter_q_lag = self.q_lag * 0.0 # 2.0
-        self.ter_q_head = self.q_head * 10.0 # 1.0
-        self.ter_q_v = self.q_v * 0.0 # 1.0
-        self.ter_q_vy = self.q_vy * 0.0
-        self.ter_q_omega = self.q_omega * 0.0 #0.5
+        # self.q_lat = 0.1 # 0.5
+        # self.q_lag = 0.1 # 2.0
+        # self.q_head = 0.0 # 0.1
+        # self.q_v = 0.0 # 0.1
+        #
+        # self.q_omega = 0.01 # 0.0
+        # self.q_pos = 0.0 # 1.0
+        #
+        # self.ter_q_head = 1.0 # self.q_head * 0.0 # 1.0
+        # self.ter_q_pos = 1.0 # self.q_pos * 0.0
 
-        self.ter_q_pos = self.q_pos * 0.0
 
-        self.q_u_throttle = 0.01  #5 # 0.01
-        self.q_du_throttle = 0.01  # 2 # 0.01
+
+        self.q_u_throttle = 0.01 #0.01  #5 # 0.01
+        self.q_du_throttle = 0.01 # 0.01  # 2 # 0.01
 
         self.q_u_steering = 0.01 # 0.2 # 0.1
-        self.q_du_steering = 0.00
+        self.q_du_steering = 0.0
 
 
         self.w_lane = 100.0 # 100.0 # 100.0 # 100.0  # weight for lane penalty
 
         self.w_opponent = 1000.0 # 300.0 # weight for opponent
 
-        self.q_ref_beta  = 0.1    # sideslip proxy: atan2(vy,vx) - yaw
-        self.q_ref_omega = 0.1    # yaw-rate penalty
-        self.q_ref_v     = 0.1    # speed tracking to V_target
+        self.q_ref_beta  = 0.0 # 0.1    # sideslip proxy: atan2(vy,vx) - yaw
+        self.q_ref_omega = 0.01    # yaw-rate penalty
+        self.q_ref_v     = 0.0    # speed tracking to V_target
         self.q_ref_lag   = 0.1
-        self.q_ref_lat   = 0.5
+        self.q_ref_lat   = 0.1
         self.q_ref_lane  = 100.0  # keep reference inside lane
+
+        self.q_ref_ter_head = 1.0
+        self.q_ref_ter_pos = 1.0
 
         # temperature for reference weights (higher => smoother reference)
         self.lambda_ref  = 0.5
         self.M = 0 # Number of frozen timesteps close to vehicle
-        self.ref_alpha = 0.8
+        self.ref_alpha = 1.0 # 1.0 take previous reference, 0.0 agressive
+        self.ref_v_multiplier = 1.5
 
 
 class ROSObjective:
@@ -282,7 +432,11 @@ class ROSObjective:
                 + self.weight.q_head * head_err ** 2
                 + self.weight.q_v * speed_err ** 2
                 + self.weight.q_vy * vy ** 2
-                + self.weight.q_omega * omega ** 2)
+                + self.weight.q_omega * omega ** 2
+                + self.weight.q_lag * lag_err ** 2
+                + self.weight.q_lat * lat_err ** 2)
+
+
 
         half_w = self.lane_width * 0.5
         excess = torch.abs(lat_err) - (half_w - self.lane_margin)
@@ -314,15 +468,6 @@ class ROSObjective:
             yaw_t = self.obs_yaw_seq[idx]  # scalar tensor
             c_opponent = self.dyn_obstacle_cost(x, y, c=c_t, yaw=yaw_t)
             cost += c_opponent
-
-
-        # cost = (
-        #         0.1 * (lag_err ** 2) +
-        #         0.1 * (lat_err ** 2)
-        #         + c_lane
-        #         + 0.01 * (omega ** 2)
-        #         + 0.1 * (speed_err ** 2)
-        # )  # [K,T]
 
 
 
@@ -408,6 +553,8 @@ class ROSObjective:
                 X0_rollout_new[M:, 1] = y_ref[M:]
                 X0_rollout_new[M:, 2] = yaw_ref[M:]
                 X0_rollout_new[M:, 3] = float(self.V_target)
+
+                self.X0_gen_plan = self.X0_track # setting this so the reference stays anchored
 
 
                 a = float(self.rollout_ref_alpha)
@@ -501,22 +648,27 @@ class ROSObjective:
         v_dir = torch.atan2(vy, vx)  # [K,T]
         beta = self.wrap_angle(v_dir - yaw)  # [K,T]
 
-        if self.X0_gen_plan is not None:
-            ref_x = self.X0_gen_plan[:, 0].unsqueeze(0)  # [1,T]
-            ref_y = self.X0_gen_plan[:, 1].unsqueeze(0)  # [1,T]
-            cy = self.ref_yaw_cos.unsqueeze(0)  # [1,T]
-            sy = self.ref_yaw_sin.unsqueeze(0)  # [1,T]
+        # if self.X0_gen_plan is not None:
+        #     ref_x = self.X0_gen_plan[:, 0].unsqueeze(0)  # [1,T]
+        #     ref_y = self.X0_gen_plan[:, 1].unsqueeze(0)  # [1,T]
+        #     cy = self.ref_yaw_cos.unsqueeze(0)  # [1,T]
+        #     sy = self.ref_yaw_sin.unsqueeze(0)  # [1,T]
+        #
+        # else:
+        ref_x = self.X0_track[:, 0].unsqueeze(0)  # [1,T]
+        ref_y = self.X0_track[:, 1].unsqueeze(0)  # [1,T]
+        cy = self.ref_yaw_cos_track.unsqueeze(0)  # [1,T]
+        sy = self.ref_yaw_sin_track.unsqueeze(0)  # [1,T]
 
-        else:
-            ref_x = self.X0_track[:, 0].unsqueeze(0)  # [1,T]
-            ref_y = self.X0_track[:, 1].unsqueeze(0)  # [1,T]
-            cy = self.ref_yaw_cos_track.unsqueeze(0)  # [1,T]
-            sy = self.ref_yaw_sin_track.unsqueeze(0)  # [1,T]
+        ref_yaw = self.X0_track[:, 2].unsqueeze(0)
 
         dx = x - ref_x
         dy = y - ref_y
         lat_err = -dx * sy + dy * cy  # [K,T]
         lag_err = dx * cy + dy * sy  # [K,T]
+        pos_err = dx ** 2 + dy ** 2
+
+        head_err = self.wrap_angle(yaw - ref_yaw)
 
         half_w = 0.5 * self.lane_width
         excess = torch.abs(lat_err) - (half_w - self.lane_margin)  # [K,T]
@@ -525,10 +677,10 @@ class ROSObjective:
         stage_cost1 = (
                 self.weight.q_ref_lag * (lag_err ** 2) +
                 self.weight.q_ref_lat * (lat_err ** 2) +
-                self.weight.q_ref_v * (v_err ** 2)
-                + c_lane
-                + self.weight.q_ref_omega * (omega ** 2)
-                + self.weight.q_ref_beta * (beta ** 2)
+                self.weight.q_ref_v * (v_err ** 2) +
+                c_lane +
+                self.weight.q_ref_omega * (omega ** 2) +
+                self.weight.q_ref_beta * (beta ** 2)
         )  # [K,T]
 
         if self.use_dyn_obstacle:
@@ -542,11 +694,17 @@ class ROSObjective:
 
 
         J1 = torch.sum(stage_cost1, dim=1)  # [K]
-
         # weights for reference (softmax of -J/lambda)
+
+        J1 +=   ( self.weight.q_ref_ter_pos * (pos_err[:,-1] ** 2) +
+                self.weight.q_ref_ter_head * (head_err[:,-1] ** 2))
+
         lam = float(self.weight.lambda_ref)
         J1_shift = J1 - torch.min(J1)
         w1 = torch.softmax(-J1_shift / max(lam, 1e-6), dim=0)  # [K]
+        
+        # idxs = torch.argsort(J1)[:5]
+        # self._publish_top_rollouts_rviz(states[idxs], ns="top_rollouts_cost1", base_id=9100)
 
         # build reference as weighted mean of positions
         x_ref_hat = torch.sum(w1.view(K, 1) * x, dim=0)  # [T]
@@ -595,8 +753,6 @@ class ROSObjective:
         if reachable_all:
             x_out = x
             y_out = y
-
-
         return x_out, y_out
 
     def get_current_goal(self):
@@ -640,12 +796,12 @@ class ROSObjective:
             if self.use_rollout_reference:
                 # Obtain new reference track for this timestep of MPPI
                 self.X0_track = torch.tensor(self.produce_X0_global(
-                    V_target=self.V_target * 1.5,
+                    V_target=self.V_target * self.weight.ref_v_multiplier,
                     N=self.N,
                     s_start=self.s
                 ), dtype= torch.float32, device = self.device)
 
-                Ds_forward = self.V_target * 1.5 * self.time_horizon
+                Ds_forward = self.V_target * self.weight.ref_v_multiplier * self.time_horizon
                 Ds_back = 0.0
 
                 self.ref_yaw_cos_track = torch.cos(self.X0_track[:, 2])
@@ -716,10 +872,12 @@ class ROSObjective:
 
 
                     if self.X0_gen_plan.shape[0] == self.N-1:
+
                         self.X0_gen_plan = torch.cat(
                             [self.X0_gen_plan, self.X0_track[-1, :].unsqueeze(0)],
                             dim=0
                         )
+                        
 
                     ds = float(self.V_target) * float(self.dt)  # desired spacing per step)
 
@@ -1405,48 +1563,8 @@ def reset_run():
     if run_counter == 4:
 
         run_counter = 0
-
-        if CONFIG["mode"] == "s_mppi":
-            CONFIG["mode"] = "s_mppi_dyn_lim"
-
-            dynamics = DynLimRateAugmentedDynamics(
-                base_dyn=base_dynamics,
-                dt=CONFIG["dt"],
-                th_min=th_min,
-                th_max=th_max,
-                steer_min=steer_min,
-                steer_max=steer_max,
-                device=CONFIG["device"],
-            )
-
-            nx = 8
-
-            last_throttle = 0.0
-            last_steer = 0.0
-
-            rospy.loginfo("S-MPPI with dynamic limits  -----------------------------------------")
-
-        elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 1.5:
-
-            CONFIG["mode"] = "s_mppi"
-            dynamics = RateAugmentedDynamics(
-                base_dyn=base_dynamics,
-                dt=CONFIG["dt"],
-                th_min=th_min,
-                th_max=th_max,
-                steer_min=steer_min,
-                steer_max=steer_max,
-                device=CONFIG["device"],
-            )
-
-            last_throttle = 0.0
-            last_steer = 0.0
-
-            CONFIG["v_target"] = 2.5
-
-            rospy.loginfo("S-MPPI simple track high velocity -----------------------------------------")
-
-        elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "simple_smooth" and CONFIG["v_target"] == 2.5:
+        
+        if CONFIG["track"] == "simple_smooth":
             track_choice = "racetrack_vicon"
             obj.s_vals_global_path, \
                 obj.x_vals_global_path, \
@@ -1460,7 +1578,7 @@ def reset_run():
 
 
             CONFIG["track"] = track_choice
-            CONFIG["v_target"] = 1.5
+            CONFIG["v_target"] = 2.5
             CONFIG["mode"] = "s_mppi"
             dynamics = RateAugmentedDynamics(
                 base_dyn=base_dynamics,
@@ -1475,7 +1593,7 @@ def reset_run():
             last_throttle = 0.0
             last_steer = 0.0
 
-            rospy.loginfo("Racetrack started with low velocity -----------------------------------------")
+            rospy.loginfo("Racetrack started with high velocity -----------------------------------------")
 
         elif CONFIG["mode"] == "s_mppi_dyn_lim" and CONFIG["track"] == "racetrack_vicon" and CONFIG["v_target"] == 1.5:
             rospy.loginfo("Racetrack started with high velocity -----------------------------------------")
@@ -1520,9 +1638,15 @@ def reset_run():
         run_counter += 1
 
     if CONFIG["env"] == "sim" and sim_dynamic:
-        reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=2)
+        if CONFIG["track"] == "racetrack_vicon_2":
+            reset_sim(x=0.0, y=-2.5, theta=0.0, model_choice=2)
+        else:
+            reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=2)
     elif CONFIG["env"] == "sim":
-        reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=1)
+        if CONFIG["track"] == "racetrack_vicon_2":
+            reset_sim(x=0.0, y=-2.5, theta=0.0, model_choice=1)
+        else:
+            reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=1)
 
     if CONFIG["mode"] == "FM_mppi":
         ref_gen = True
@@ -1725,7 +1849,10 @@ if __name__ == "__main__":
     # Reset the simulator
     if CONFIG["env"] == "sim":
         dr_client = Client("/dart_simulator_node", timeout=2.0)
-        reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=model_choice)
+        if CONFIG["track"] == "racetrack_vicon_2":
+            reset_sim(x=0.0, y=-2.5, theta=0.0, model_choice=model_choice)
+        else:
+            reset_sim(x=-1.5, y=-2.5, theta=0.0, model_choice=model_choice)
 
 
     publish_meta()
@@ -1739,7 +1866,7 @@ if __name__ == "__main__":
 
     if CONFIG["troubleshoot"] == 1:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        plot_dir = f"/home/maarten/Documents/Thesis/log_Dart/troubleshoot/plots_{timestamp}"
+        plot_dir = f"/home/maarten/Documents/Thesis/log_Dart/troubleshoot/1plots_{timestamp}"
         mppi_plotter = OnlineMppiPlotter(
             max_history=200,
             save_dir=plot_dir,
@@ -1747,6 +1874,43 @@ if __name__ == "__main__":
             file_prefix=f"car{car_number}"
         )
         rospy.loginfo(f"[MPPI online plot] saving plots to {plot_dir}")
+
+    # --- logging rollouts/weights for offline Neff plots ---
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    rollout_log_dir = f"/home/maarten/Documents/Thesis/log_Dart/mppi_rollouts_{timestamp}"
+
+    run_id = 0
+    rollout_logger = RunRolloutLogger(
+        root_dir=rollout_log_dir,
+        car_number=car_number,
+        max_steps=10000,
+        downsample_K=800  # set None if you truly want all K; 500-1500 is usually enough
+    )
+
+    state_est_pub = rospy.Publisher(
+        f"state_est_{car_number}",
+        Float32MultiArray,
+        queue_size=10
+    )
+
+    def current_meta_dict():
+        return {
+            "mppi_model": base_dynamics.__class__.__name__,
+            "sim_model": model_choice,
+            "track_choice": track_choice,
+            "dt": CONFIG["dt"],
+            "mppi": CONFIG["mppi"],
+            "V_target": obj.V_target,
+            "vel_mode": CONFIG["vel_mode"],
+            "obstacle": CONFIG["use_obstacle"],
+            "mode": CONFIG["mode"],
+        }
+
+
+    # initialize meta for run 0
+    rollout_logger.reset(run_id=run_id, meta=current_meta_dict())
+
+    ctrl_step = 0  # define before while loop
 
     if CONFIG["track"] == "straight_line":
         # obj.lap_count = 1
@@ -1757,10 +1921,11 @@ if __name__ == "__main__":
         # making sure that while waiting the actions are zero
         # sim.send_control(torch.tensor([0.0, 0.0]))
         # if CONFIG["troubleshoot"] == 1:
-        # if first == 0:
-        #    input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
-        # else:
-        #    first = 0
+        #if first == 0:
+        #   input("Press Enter to run the next MPPI iteration or ctrl-c to quit")
+        #   # first = 10
+        #else:
+        #   first = first - 1
         # rospy.loginfo("Starting next MPPI iteration...")
 
         state = sim.get_current_state(dynamics._device)
@@ -1770,6 +1935,11 @@ if __name__ == "__main__":
         else:
             state_est = state
 
+        s_est = state_est[0].detach().cpu().numpy()
+
+        msg = Float32MultiArray()
+        msg.data = s_est.astype(np.float32).tolist()
+        state_est_pub.publish(msg)
 
         obj.current_state = state_est  # update the current state in the objective, which updates the goal
         obj.counter = 0
@@ -1834,13 +2004,16 @@ if __name__ == "__main__":
         )
 
         sim.send_control(torch.tensor([throttle,transformed_steer], dtype=torch.float32))
-        # sim.send_control(torch.tensor([throttle, steer], dtype=torch.float32))
+        #sim.send_control(torch.tensor([throttle, steer], dtype=torch.float32))
+        
+        # sim.send_control(torch.tensor([throttle, 0], dtype=torch.float32))
 
         # If dynamic temperature is one publish the temperature and eta
-        # if CONFIG["mppi"]["update_lambda"]:
-        # temp_msg = Float32MultiArray()
-        # temp_msg.data = [planner.beta, planner.eta.item()]
-        # dyn_temp_pub.publish(temp_msg)
+        if CONFIG["mppi"]["update_lambda"]:
+            temp_msg = Float32MultiArray()
+            temp_msg.data = [planner.beta, planner.eta.item()]
+            dyn_temp_pub.publish(temp_msg)
+            print(f"temperature: {planner.beta}")
 
         cov_msg = Float32MultiArray()
         cov_msg.data = planner.cov_action.numpy()
@@ -1904,7 +2077,7 @@ if __name__ == "__main__":
         # plt.show()
 
 
-        if CONFIG["troubleshoot"] == 1:
+        if CONFIG["troubleshoot"] == 1: # and first < 10:
             # --- MPPI online diagnostics / plotting ---
             step_idx += 1
 
@@ -1994,24 +2167,62 @@ if __name__ == "__main__":
                 best_u = planner.best_traj.detach().cpu().numpy()  # (T,2)
 
                 # 4) update plot if we have something
-                if mppi_plotter is not None and u0_samples is not None and weights_np is not None:
-                    mppi_plotter.update(
-                        u0=u0,
-                        Neff=Neff,
-                        cost_min=cost_min,
-                        u0_samples=u0_samples,
-                        weights=weights_np,
-                        t=step_idx,
-                        mean_u=mean_u,
-                        best_u=best_u,
-                        filt_u=planner.best_filtered,
-                    )
+                # if mppi_plotter is not None and u0_samples is not None and weights_np is not None:
+                    # mppi_plotter.update(
+                    #    u0=u0,
+                    #    Neff=Neff,
+                    #    cost_min=cost_min,
+                    #    u0_samples=u0_samples,
+                    #    weights=weights_np,
+                    #    t=step_idx,
+                    #    mean_u=mean_u,
+                    #    best_u=best_u,
+                    #    filt_u=planner.best_filtered,
+                    #    sample_costs=planner.cost_total.detach().cpu().numpy()
+                    #)
 
             except Exception as e:
                 rospy.logwarn(f"[MPPI online plot] error: {e}")
 
             # if step_idx % 20 == 0:
-            #     input("Paused — press Enter...")
+            #      input("Paused — press Enter...")
+            
+            # AFTER you computed u0_samples and weights_np (and cost_min, mean_u, best_u)
+            if (ctrl_step > 50) and (u0_samples is not None) and (weights_np is not None):
+                # sample costs: pick what you actually have available
+                sample_costs_np = None
+                if hasattr(planner, "cost_total") and planner.cost_total is not None:
+                    sample_costs_np = planner.cost_total.detach().cpu().numpy()
+                elif hasattr(planner, "total_costs") and planner.total_costs is not None:
+                    sample_costs_np = planner.total_costs.detach().cpu().numpy()
+                        #     # mean_u: action is torch; store the full mean plan if you want
+                mean_u_np = None
+                try:
+                    mean_u_np = mean_u.detach().cpu().numpy() if torch.is_tensor(mean_u) else np.asarray(mean_u)
+                except Exception:
+                    mean_u_np = None
+            
+                rollout_logger.log_step(
+                    step_idx=ctrl_step,
+                    u0=np.array([throttle, steer], dtype=np.float32),
+                    u0_samples=u0_samples,  # Kx2
+                    weights=weights_np,  # K
+                    costs=sample_costs_np,  # K or None
+                    cost_min=cost_min,
+                    mean_u=mean_u_np,  # Tx2 or None
+                    best_u=best_u  # already numpy Tx2 in your code
+                )
+            
+                if ctrl_step == 200:
+                    try:
+                        out = rollout_logger.flush()
+                        if out is not None:
+                            rospy.loginfo(f"[mppi_ros] Saved rollout log: {out}")
+                    except Exception as e:
+                        rospy.logwarn(f"[mppi_ros] Failed to flush rollout log: {e}")
+
+
+        ctrl_step += 1
 
 
 

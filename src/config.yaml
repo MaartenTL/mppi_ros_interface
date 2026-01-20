@@ -1,13 +1,13 @@
 device: "cpu" # cuda:0, cpu
 dt: 0.1 # 0.05, 0.1
 steps: 1000
-sim_model: "dynamic"      # kinematic, dynamic, SVGP, SVGP_wet
-mppi_model: "dynamic"     # kinematic, dynamic, SVGP
-v_target: 3.5            # 1.5 2.5, 4.0, 5.0
-laps: 1                   # number of laps to log
+sim_model: "kinematic"      # kinematic, dynamic, SVGP, SVGP_wet
+mppi_model: "kinematic"     # kinematic, dynamic, SVGP
+v_target: 2.5          # 1.5 2.5, 4.0, 5.0
+laps: 3                   # number of laps to log
 disturbance: 0            # 0: disturbance off, 1: disturbance on
 track: "racetrack_vicon_2"    # "racetrack_vicon_2" , "racetrack_vicon" , "simple_smooth", "simple_smooth_small", "straight_line", "simple_smooth_flip", "racetrack_vicon_short"
-viz_rollouts: 0           # 0: don't visualize the rollouts, 1: visualize the rollouts
+viz_rollouts:  0          # 0: don't visualize the rollouts, 1: visualize the rollouts
 use_obstacle: "off"           # "static", "dynamic", "off", "agent"
 vel_mode: "gt"            # velocity estimation technique, ls, fd, gt: ground truth from simulator
 env: "sim"                # "lab" , "sim" -- used for resetting the sim or not
@@ -23,26 +23,31 @@ mode: "FM_mppi"              # "mppi", "s_mppi", "s_mppi_dyn_lim", "FM_mppi" (Fu
 
 mppi:
   update_cov: False
-  pre_filter: "lowpass" # "off", "lowpass"
-  eta_u_bound: 180 # 280, 300 1100
-  eta_l_bound: 5.0 # 2.5 200
+  pre_filter: "off" # "off", "lowpass"
+  eta_u_bound: 280 # 180 280, 300 1100
+  eta_l_bound: 5.0 # 2.5, 5.0, 200
   device: "cpu" # cuda:0, cpu
   mppi_mode: "simple"  # halton-spline, simple
   sampling_method: "random"   # halton, random
   num_samples: 4000 # 50 # 100 50 4000 # 100
   horizon: 10 # 12, 15, 20                 # At least 12 for Halton Sampling
   u_per_command: 10               # Make same as horizon so control over entire horizon gets outputted
-  rollout_var_discount: 0.95 # 0.95 # 0.95 # 0.95
-  sample_null_action: True
+  rollout_var_discount: 1.0 # 1.0 # 0.95 # 0.95 # 0.95
+  sample_null_action: False
   noise_abs_cost: False
   filter_u: False
   use_priors: False
   update_lambda: False
   lambda_: 0.05 # 0.05, 0.5, 40
-# MPPI
+# MPPI - kinematic
   u_min: [0.0, -1.0]
   u_max: [1.0, 1.0]
-  noise_sigma:  [[0.3, 0.0], [0.0, 0.5]] # [[0.1, 0.0], [0., 0.2]] , [[0.3, 0.0], [0., 0.5]]
+  noise_sigma:  [[0.1, 0.0], [0.0, 0.2]] # [[0.1, 0.0], [0., 0.2]] , [[0.3, 0.0], [0., 0.5]]
+
+# MPPI - Dynamic
+#  u_min: [ 0.0, -1.0 ]
+#  u_max: [ 1.0, 1.0 ]
+#  noise_sigma: [[ 0.3, 0.0 ], [ 0.0, 0.5 ] ] # [[0.1, 0.0], [0., 0.2]] , [[0.3, 0.0], [0., 0.5]]
 
 # S-MPPI
 #  u_min: [-0.5, -3.0] # 0.5, 2.0

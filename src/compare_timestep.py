@@ -19,7 +19,13 @@ from path_track_definitions import generate_path_data
 abs_path = os.path.dirname(os.path.abspath(__file__))
 
 mpl.rcParams.update({
-    "axes.grid": True, "grid.linestyle": "--", "grid.alpha": 0.35
+    "axes.grid": True, # "grid.linestyle": "--", "grid.alpha": 0.35,
+    # Font sizes (global defaults)
+    "axes.labelsize": 20,  # xlabel/ylabel
+    "xtick.labelsize": 14,  # x tick labels
+    "ytick.labelsize": 14,  # y tick labels
+    "legend.fontsize": 14,  # legend text
+    "axes.titlesize": 20,  # title text
 })
 BASE_DIR = "/home/maarten/Documents/Thesis/log_Dart"
 
@@ -360,8 +366,8 @@ def plot_one(df, label=None):
 
     # Speed & vy
     plt.figure("Speed (vx)")
-    plt.plot(np.hypot(df["vx"], df["vy"]), label=f"speed {label}" if label else "speed")
-    plt.xlabel("timestep", fontsize=20); plt.ylabel("[m/s]", fontsize=20); plt.title("Speed"); plt.legend()
+    plt.plot(np.hypot(df["vx"], df["vy"]), label=f"velocity {label}" if label else "velocity")
+    plt.xlabel("timestep", fontsize=20); plt.ylabel("[m/s]", fontsize=20); plt.title("velocity"); plt.legend()
 
     plt.figure("vy")
     plt.plot(df["vy"], label=f"vy {label}" if label else "vy")
@@ -429,7 +435,11 @@ def plot_one(df, label=None):
     # Errors
     plt.figure("Lateral Error")
     plt.plot(df["lat_err"], label=f"lat {label}" if label else "lat")
-    plt.xlabel("timestep"); plt.ylabel("error [m]"); plt.title("Lateral Error vs time"); plt.legend()
+    plt.xlabel("timestep", fontsize=20); plt.ylabel("error [m]", fontsize=20); # plt.title("Lateral Error vs time"); plt.legend()
+    plt.axhline(0, color="k", linestyle="--", linewidth=1)
+    plt.grid(True)
+
+
 
     plt.figure("Lag Error")
     plt.plot(df["lag_err"], label=f"lag {label}" if label else "lag")
@@ -450,7 +460,7 @@ def plot_one(df, label=None):
 
     plt.figure("Cumulative Error (abs)")
     plt.plot(cum_abs_lat, label=f"∫|lat| dt — {label}")
-    plt.plot(cum_pos,     label=f"∫pos dt — {label}")
+    # plt.plot(cum_pos,     label=f"∫pos dt — {label}")
     plt.xlabel("timestep"); plt.ylabel("m"); plt.title("Cumulative Errors")
     plt.legend()
 
@@ -651,7 +661,7 @@ def main():
     # os.makedirs(args.save_figs, exist_ok=True)
     for num in plt.get_fignums():
         fig = plt.figure(num)
-        fig.tight_layout()
+        # fig.tight_layout()
         ax = fig.get_axes()[0]
         fig.savefig(os.path.join(fig_dir, f"{ax.get_title()}.png"), dpi=150)
     print(f"Saved figures to: {fig_dir}")

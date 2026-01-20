@@ -55,6 +55,7 @@ class DARTLogger:
         self.data = {
             "t": None, "x": None, "y": None, "yaw": None,
             "vx": None, "vy": None, "omega": None,
+            "x_est": None, "y_est": None, "yaw_est":None,
             "vx_est": None, "vy_est": None, "omega_est": None,
             "throttle": None, "steering": None,
             "comp_time": None, "cmd_time": None, "lap_time": 0.0,
@@ -77,9 +78,12 @@ class DARTLogger:
         rospy.Subscriber(f"/steering_{self.car}", Float32, self.cb_steer, queue_size=100)
         rospy.Subscriber(f"/comptime_{self.car}", Float32, self.cb_comp, queue_size=100)
 
-        rospy.Subscriber(f"/vx_est_{self.car}", Float32, self.cb_vx_est, queue_size=100)
-        rospy.Subscriber(f"/vy_est_{self.car}", Float32, self.cb_vy_est, queue_size=100)
-        rospy.Subscriber(f"/omega_est_{self.car}", Float32, self.cb_omega_est, queue_size=100)
+        rospy.Subscriber(
+            f"/state_est_{self.car}",
+            Float32MultiArray,
+            self.cb_state_est,
+            queue_size=100
+        )
 
         rospy.Subscriber("/obstacles", MarkerArray, self.cb_obstacle, queue_size=1)
 
@@ -145,7 +149,7 @@ class DARTLogger:
         self.writer.writerow([
             "mppi_config","mppi_type", "mppi_model", "sim_model", "track_choice", "dt","V_target", "max_laps","Vel_estimator","Use_obstacle",
             "weights", "lap_time", "total expected cost",
-            "t", "x", "y", "yaw", "vx", "vy", "omega","vx est", "vy est", "omega est",
+            "t", "x", "y", "yaw", "vx", "vy", "omega","x est", "y est", "yaw est","vx est", "vy est", "omega est",
             "throttle", "steering","throttle rate", "steering rate", "speed", "beta",
             "comp_time","cmd_time", "lat cost", "lag cost", "heading cost", "speed cost", "vy cost", "omega cost","poss cost",
             "obstacle_x", "obstacle_y", "obstacle_yaw","obstacle_dist","temperature","eta","covariance","scale"
@@ -177,6 +181,19 @@ class DARTLogger:
         # Optional: clear costs
         for k in self.costs:
             self.costs[k] = 0.0
+
+    def cb_state_est(self, msg: Float32MultiArray):
+        # expected: [x, y, yaw, vx, vy, omega]
+        if len(msg.data) < 6:
+            return
+        with self.lock:
+            self.data["x_est"] = float(msg.data[0])
+            self.data["y_est"] = float(msg.data[1])
+            self.data["yaw_est"] = float(msg.data[2])
+            self.data["vx_est"] = float(msg.data[3])
+            self.data["vy_est"] = float(msg.data[4])
+            self.data["omega_est"] = float(msg.data[5])
+
 
     def cb_dyn_cov(self, msg):
         with self.lock:
@@ -439,6 +456,7 @@ class DARTLogger:
             *meta_vals, weights, self.data["lap_time"],self.data["expected_cost"],
             self.data["t"], self.data["x"], self.data["y"], self.data["yaw"],
             self.data["vx"], self.data["vy"], self.data["omega"],
+            self.data["x_est"], self.data["y_est"], self.data["yaw_est"],
             self.data["vx_est"], self.data["vy_est"], self.data["omega_est"],
             self.data["throttle"], self.data["steering"],self.data["throttle_rate"], self.data["steering_rate"],
             math.hypot(self.data["vx"], self.data["vy"]),
