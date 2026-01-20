@@ -218,7 +218,7 @@ class MPPIPlanner(ABC):
 
         # Filtering
         self.sgf_window = 9
-        self.sgf_order = 2
+        self.sgf_order = 1
         if (self.sgf_window % 2) == 0:
             self.sgf_window -=1       # Some versions of the sav-go filter require odd window size
 
@@ -426,6 +426,18 @@ class MPPIPlanner(ABC):
                 n_priors = len(prior_samples)
                 u[0:n_priors, :] = prior_samples
                 self.perturbed_action[0:n_priors, t] = u[0:n_priors, :]
+
+
+
+            #u[0,:] = torch.ones_like(u[0,:]) * 0.26
+            #u[1,:] = torch.ones_like(u[1,:]) * 0.28
+            #u[2,:] = torch.ones_like(u[2,:]) * 0.30
+            #u[3,:] = torch.ones_like(u[3,:]) * 0.32
+            #u[4,:] = torch.ones_like(u[4,:]) * 0.34
+            #u[5,:] = torch.ones_like(u[5,:]) * 0.36
+            #u[6,:] = torch.ones_like(u[6,:]) * 0.38
+            #u[7,:] = torch.ones_like(u[7,:]) * 0.40
+
             state_old = state
             u_old = u
 
@@ -452,6 +464,9 @@ class MPPIPlanner(ABC):
             c = torch.where(torch.isnan(c), torch.tensor(10e+5),c) # makes sure that no infinity trickles down to produce nan values
 
             cost_horizon[:, t] = c
+
+            #print(f"velocity at time {t} 1-7: {state[0:6,3]}")
+            #print(f"cost at time {t} 1-7: {c[0:6]}")
 
             # Save total states/actions
             states.append(state)
@@ -489,7 +504,9 @@ class MPPIPlanner(ABC):
         self.best_traj = torch.index_select(actions, 0, best_idx).squeeze(0)
         # self.best_filtered = self._lowpass_filter_horizon(self.best_traj, 0.5)
 
-
+        #print(f"costs 1-7: {cost_horizon[0:6,:]}")
+        #print(f"weights 1-7: {w[0:6]}")
+        #print(f"best weight: {torch.max(w)}")
 
         weighted_seq = w * actions.permute(*torch.arange(actions.ndim - 1, -1, -1))
         sum_seq = torch.sum(weighted_seq.permute(*torch.arange(weighted_seq.ndim - 1, -1, -1)), dim=0)
